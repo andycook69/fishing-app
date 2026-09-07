@@ -14,9 +14,12 @@ if "authenticated" not in st.session_state:
 if "subscribed" not in st.session_state:
     st.session_state.subscribed = False
 
-# Local memory security credentials
+# Securely pull your invisible login credentials directly from the cloud vault
+SECRET_EMAIL = st.secrets.get("ADMIN_EMAIL", "admin@example.com")
+SECRET_PASS = st.secrets.get("ADMIN_PASSWORD", "trout123")
+
 if "user_registry" not in st.session_state:
-    st.session_state.user_registry = {"admin@example.com": "trout123"}
+    st.session_state.user_registry = {SECRET_EMAIL: SECRET_PASS}
 
 # Paywall & Authorization Overlay
 if not st.session_state.authenticated or not st.session_state.subscribed:
@@ -40,8 +43,10 @@ if not st.session_state.authenticated or not st.session_state.subscribed:
     with right_col:
         st.markdown("### 🔐 Subscriber Access Portal")
         auth_mode = st.radio("Account Action", ["Sign In", "Create New Subscriber Account"])
-        user_email = st.text_input("Email Address", value="admin@example.com" if auth_mode=="Sign In" else "")
-        user_pass = st.text_input("Password", type="password", value="trout123" if auth_mode=="Sign In" else "")
+        
+        # Paywall Layout text boxes now boot up completely blank and secure
+        user_email = st.text_input("Email Address", value="", placeholder="Enter your email")
+        user_pass = st.text_input("Password", type="password", value="", placeholder="Enter your password")
         
         if auth_mode == "Create New Subscriber Account":
             if st.button("Register & Activate Subscription"):
@@ -126,10 +131,10 @@ def load_historical_weather(lat, lon, target_date):
         archive_url = f"https://open-meteo.com{lat}&longitude={lon}&start_date={date_str}&end_date={date_str}&daily=temperature_2m_max,surface_pressure_mean,precipitation_sum,weather_code"
         res = requests.get(archive_url).json()["daily"]
         return {
-            "temp": res["temperature_2m_max"][0],
-            "pressure": res["surface_pressure_mean"][0],
-            "rain": res["precipitation_sum"][0],
-            "condition": translate_weather_code(res["weather_code"][0])
+            "temp": res["temperature_2m_max"],
+            "pressure": res["surface_pressure_mean"],
+            "rain": res["precipitation_sum"],
+            "condition": translate_weather_code(res["weather_code"])
         }
     except:
         return None
