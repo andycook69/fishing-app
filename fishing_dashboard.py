@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import datetime
+import random
 
 # Page Configurations
 st.set_page_config(page_title="Angler Pro - Northern Rivers", layout="wide", page_icon="🎣")
@@ -70,15 +71,14 @@ RIVER_DATA = {
 }
 
 st.sidebar.title("🛡️ Angler Pro Controls")
-# 🌟 FIXED QC LINE 80: Removed the broken index tracking query completely
-selected_river = st.sidebar.selectbox("Quick Switch River Venue:", list(RIVER_DATA.keys()))
+selected_river = st.sidebar.selectbox("Quick Switch River Venue:", list(RIVER_DATA.keys()), index=0)
 
 if st.sidebar.button("Log Out"):
     st.session_state.authenticated = False
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
-# Real-time telemetry crawler
+# Real-time metrics crawler
 def load_live_metrics(station_id, lat, lon, fallback_lvl):
     lvl, temp, press, w_txt = fallback_lvl, 12.1, 1014.2, "Slight Rain 🌦️"
     try:
@@ -103,7 +103,7 @@ def load_live_metrics(station_id, lat, lon, fallback_lvl):
 # --- ROUTER RENDERING ENGINES ---
 meta_info = RIVER_DATA[selected_river]
 
-# PAGE VIEW A: MAIN ACTIVE LIVE DASHBOARD PANEL
+# PAGE VIEW A: MAIN DASHBOARD SCREEN
 if st.session_state.current_view == "Dashboard":
     st.title(f"🎣 {selected_river} Analytics Dashboard")
     st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
@@ -132,7 +132,7 @@ if st.session_state.current_view == "Dashboard":
         st.session_state.current_view = "Trends"
         st.rerun()
 
-# PAGE VIEW B: LIGHTWEIGHT, MEMORY-OPTIMIZED SPREADSHEET ENGINE
+# PAGE VIEW B: THE ORGANIC GRAPH TIMELINE MODULE
 else:
     st.title(f"📈 {selected_river} - Custom Timeline Engine")
     
@@ -151,17 +151,25 @@ else:
     days_lookup = {"Past Week (7 Days)": 7, "Past Month (30 Days)": 30, "Past 3 Months (90 Days)": 90, "Past 6 Months (180 Days)": 180}
     total_days = days_lookup[selected_label]
     
-    river_seed = meta_info["id_num"]
+    # 🌟 NEW RANDOM VOLATILITY GENERATOR: Simulates authentic environmental behavior
+    # Locks the seed to the specific river's ID number so data is consistent but unique
+    river_id = meta_info["id_num"]
     base_calc = float(meta_info["base_level"])
     
-    chart_data = pd.DataFrame({
-        "River Level (m)": [round(base_calc + ((i + river_seed) % 3) * 0.06 - 0.02, 2) for i in range(total_days)],
-        "Rainfall (mm)": [round(0.0 if (i + river_seed) % 4 != 0 else (2.4 + (river_seed % 3)), 1) for i in range(total_days)],
-        "Fish Logged": [int(1 + ((i * river_seed) % 5)) for i in range(total_days)]
-    })
+    dates_list = []
+    level_list = []
+    rain_list = []
+    fish_list = []
     
-    st.markdown("#### 📊 Timeline Parameter Analysis Analytics Chart")
-    st.line_chart(chart_data, height=350)
-    
-    st.markdown("#### 📓 Premium Catchment History Record Sheets")
-    st.dataframe(chart_data, use_container_width=True, height=300)
+    # Generate smooth organic random trends
+    current_water = base_calc
+    for i in range(total_days):
+        day_label = (datetime.date.today() - datetime.timedelta(days=total_days - i)).strftime('%d %b')
+        dates_list.append(day_label)
+        
+        # Pseudo-random rolling weather curve
+        random.seed(river_id + i * 45)
+        rain = round(max(0.0, random.choice([0.0, 0.0, 0.0, 1.2, 5.8, 14.2])), 1)
+        rain_list.append(rain)
+        
+        # River rises instantly with rain, then falls slowly
