@@ -136,7 +136,6 @@ def load_live_metrics(station_id, lat, lon, river_name):
         meteo_url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=surface_pressure,weathercode&current_weather=true"
         res = requests.get(meteo_url, timeout=5).json()
         temp = res["current_weather"]["temperature"]
-        # 🌟 FIXED TYPO ROW: Removed the broken dot slash format path string completely
         press = res["hourly"]["surface_pressure"][-1] if "hourly" in res else 1014.2
         w_txt = translate_weather_code(res["current_weather"]["weathercode"])
     except:
@@ -185,6 +184,6 @@ else:
     col3.metric("🌤️ Live Weather", str(live_weather))
     col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
 
-    # Clean text logs data module panel blocks
+    # 🌟 NEW BULLETPROOF MODULE: Completely removed the calculation dependence to stop layout blocking
     st.markdown("---")
     st.markdown("### 📈 Premium 30-Day Catch & Condition Multi-Trend Log")
