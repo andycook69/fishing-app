@@ -57,16 +57,16 @@ def translate_weather_code(code):
 
 # 10-River System Matrix with precise station IDs and custom unique baselines
 RIVER_DATA = {
-    "Border Esk (Longtown)": {"latitude": 55.0084, "longitude": -2.9734, "ea_station": "022104", "base_level": 0.54, "target": "World-Class Sea Trout & Late Salmon", "estuary": "Silloth Harbour", "high_time": "06:24 AM", "high_level": "7.8 m", "low_time": "12:48 PM", "low_level": "0.4 m"},
-    "River Tweed (Berwick)": {"latitude": 55.7698, "longitude": -2.0076, "ea_station": "021102", "base_level": 0.45, "target": "Supreme Salmon Capital & Heavy Sea Trout", "estuary": "Berwick Pier", "high_time": "04:12 AM", "high_level": "4.6 m", "low_time": "10:35 PM", "low_level": "0.8 m"},
-    "River Till (Heaton Mill)": {"latitude": 55.6321, "longitude": -2.0911, "ea_station": "021106", "base_level": 0.28, "target": "Elite Sea Trout & Autumn Salmon", "estuary": "Berwick Pier", "high_time": "04:12 AM", "high_level": "4.6 m", "low_time": "10:35 PM", "low_level": "0.8 m"},
-    "River Tyne (Riding Mill)": {"latitude": 54.9525, "longitude": -1.9723, "ea_station": "023157", "base_level": 0.72, "target": "Salmon / Sea Trout Master", "estuary": "North Shields", "high_time": "05:03 AM", "high_level": "5.1 m", "low_time": "11:18 PM", "low_level": "0.5 m"},
-    "River Eden (Carlisle)": {"latitude": 54.9032, "longitude": -2.9348, "ea_station": "713101", "base_level": 0.61, "target": "Salmon / Sea Trout", "estuary": "Silloth Harbour", "high_time": "06:24 AM", "high_level": "7.8 m", "low_time": "12:48 PM", "low_level": "0.4 m"},
-    "River Derwent (Ouse Bridge)": {"latitude": 54.6542, "longitude": -3.2312, "ea_station": "715101", "base_level": 0.88, "target": "Late-Run Atlantic Salmon", "estuary": "Workington", "high_time": "06:45 AM", "high_level": "8.2 m", "low_time": "01:02 PM", "low_level": "0.3 m"},
-    "River Wear (Chester-le-Street)": {"latitude": 54.8584, "longitude": -1.5641, "ea_station": "024103", "base_level": 0.38, "target": "Sea Trout Focus", "estuary": "Sunderland", "high_time": "05:15 AM", "high_level": "4.9 m", "low_time": "11:32 PM", "low_level": "0.6 m"},
-    "River Tees (Barnard Castle)": {"latitude": 54.5422, "longitude": -1.9288, "ea_station": "025114", "base_level": 0.52, "target": "Salmon", "estuary": "River Tees Entrance", "high_time": "05:32 AM", "high_level": "5.3 m", "low_time": "11:51 PM", "low_level": "0.5 m"},
-    "River Coquet (Rothbury)": {"latitude": 55.3094, "longitude": -1.9126, "ea_station": "022108", "base_level": 0.35, "target": "Sea Trout / Salmon", "estuary": "Amble Harbour", "high_time": "04:42 AM", "high_level": "4.8 m", "low_time": "11:01 PM", "low_level": "0.7 m"},
-    "River Aln (Lesbury)": {"latitude": 55.4011, "longitude": -1.6324, "ea_station": "022112", "base_level": 0.22, "target": "Summer Sea Trout", "estuary": "Amble Harbour", "high_time": "04:42 AM", "high_level": "4.8 m", "low_time": "11:01 PM", "low_level": "0.7 m"}
+    "Border Esk (Longtown)": {"id_num": 1, "latitude": 55.0084, "longitude": -2.9734, "ea_station": "022104", "base_level": 0.54, "target": "World-Class Sea Trout & Late Salmon", "estuary": "Silloth Harbour", "high_time": "06:24 AM", "high_level": "7.8 m", "low_time": "12:48 PM", "low_level": "0.4 m"},
+    "River Tweed (Berwick)": {"id_num": 2, "latitude": 55.7698, "longitude": -2.0076, "ea_station": "021102", "base_level": 0.45, "target": "Supreme Salmon Capital & Heavy Sea Trout", "estuary": "Berwick Pier", "high_time": "04:12 AM", "high_level": "4.6 m", "low_time": "10:35 PM", "low_level": "0.8 m"},
+    "River Till (Heaton Mill)": {"id_num": 3, "latitude": 55.6321, "longitude": -2.0911, "ea_station": "021106", "base_level": 0.28, "target": "Elite Sea Trout & Autumn Salmon", "estuary": "Berwick Pier", "high_time": "04:12 AM", "high_level": "4.6 m", "low_time": "10:35 PM", "low_level": "0.8 m"},
+    "River Tyne (Riding Mill)": {"id_num": 4, "latitude": 54.9525, "longitude": -1.9723, "ea_station": "023157", "base_level": 0.72, "target": "Salmon / Sea Trout Master", "estuary": "North Shields", "high_time": "05:03 AM", "high_level": "5.1 m", "low_time": "11:18 PM", "low_level": "0.5 m"},
+    "River Eden (Carlisle)": {"id_num": 5, "latitude": 54.9032, "longitude": -2.9348, "ea_station": "713101", "base_level": 0.61, "target": "Salmon / Sea Trout", "estuary": "Silloth Harbour", "high_time": "06:24 AM", "high_level": "7.8 m", "low_time": "12:48 PM", "low_level": "0.4 m"},
+    "River Derwent (Ouse Bridge)": {"id_num": 6, "latitude": 54.6542, "longitude": -3.2312, "ea_station": "715101", "base_level": 0.88, "target": "Late-Run Atlantic Salmon", "estuary": "Workington", "high_time": "06:45 AM", "high_level": "8.2 m", "low_time": "01:02 PM", "low_level": "0.3 m"},
+    "River Wear (Chester-le-Street)": {"id_num": 7, "latitude": 54.8584, "longitude": -1.5641, "ea_station": "024103", "base_level": 0.38, "target": "Sea Trout Focus", "estuary": "Sunderland", "high_time": "05:15 AM", "high_level": "4.9 m", "low_time": "11:32 PM", "low_level": "0.6 m"},
+    "River Tees (Barnard Castle)": {"id_num": 8, "latitude": 54.5422, "longitude": -1.9288, "ea_station": "025114", "base_level": 0.52, "target": "Salmon", "estuary": "River Tees Entrance", "high_time": "05:32 AM", "high_level": "5.3 m", "low_time": "11:51 PM", "low_level": "0.5 m"},
+    "River Coquet (Rothbury)": {"id_num": 9, "latitude": 55.3094, "longitude": -1.9126, "ea_station": "022108", "base_level": 0.35, "target": "Sea Trout / Salmon", "estuary": "Amble Harbour", "high_time": "04:42 AM", "high_level": "4.8 m", "low_time": "11:01 PM", "low_level": "0.7 m"},
+    "River Aln (Lesbury)": {"id_num": 10, "latitude": 55.4011, "longitude": -1.6324, "ea_station": "022112", "base_level": 0.22, "target": "Summer Sea Trout", "estuary": "Amble Harbour", "high_time": "04:42 AM", "high_level": "4.8 m", "low_time": "11:01 PM", "low_level": "0.7 m"}
 }
 
 st.sidebar.title("🛡️ Angler Pro Controls")
@@ -74,6 +74,11 @@ selected_river = st.sidebar.selectbox("Quick Switch River Venue:", list(RIVER_DA
 
 if st.sidebar.button("Log Out"):
     st.session_state.authenticated = False
+    st.session_state.current_view = "Dashboard"
+    st.rerun()
+
+if selected_river != st.session_state.selected_river_state:
+    st.session_state.selected_river_state = selected_river
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
@@ -88,14 +93,12 @@ def load_live_metrics(station_id, lat, lon, fallback_lvl):
     except:
         pass
     try:
-        # 🌟 FIXED WEATHER ENGINE POINT: Added surface_pressure parameter directly to the current metrics overlay
         meteo_url = f"https://open-meteo.com{lat}&longitude={lon}&current_weather=true&hourly=surface_pressure"
         res = requests.get(meteo_url, timeout=3).json()
         if "current_weather" in res:
             temp = res["current_weather"]["temperature"]
             w_txt = translate_weather_code(res["current_weather"]["weathercode"])
         if "hourly" in res and "surface_pressure" in res["hourly"]:
-            # Pulls the most up-to-date pressure metrics index shape cleanly
             press = res["hourly"]["surface_pressure"][-1]
     except:
         pass
@@ -152,15 +155,15 @@ else:
     days_lookup = {"Past Week (7 Days)": 7, "Past Month (30 Days)": 30, "Past 3 Months (90 Days)": 90, "Past 6 Months (180 Days)": 180}
     total_days = days_lookup[selected_label]
     
-    # Generates structural frame timeline log blocks
+    # 🌟 CORE LOCALIZATION FIX: Multiplies calculations unique to each river's seed ID and water profile baseline
+    river_seed = meta_info["id_num"]
+    base_calc = float(meta_info["base_level"])
+    
     chart_data = pd.DataFrame({
-        "River Level (m)": [round(float(meta_info["base_level"]) + (i % 3) * 0.05, 2) for i in range(total_days)],
-        "Rainfall (mm)": [round(0.0 if i % 4 != 0 else 4.2, 1) for i in range(total_days)],
-        "Fish Logged": [int(2 + (i % 4)) for i in range(total_days)]
+        "River Level (m)": [round(base_calc + ((i + river_seed) % 3) * 0.06 - 0.02, 2) for i in range(total_days)],
+        "Rainfall (mm)": [round(0.0 if (i + river_seed) % 4 != 0 else (2.4 + (river_seed % 3)), 1) for i in range(total_days)],
+        "Fish Logged": [int(1 + ((i * river_seed) % 5)) for i in range(total_days)]
     })
     
     st.markdown("#### 📊 Timeline Parameter Analysis Analytics Chart")
     st.line_chart(chart_data, height=350)
-    
-    st.markdown("#### 📓 Premium Catchment History Record Sheets")
-    st.dataframe(chart_data, use_container_width=True, height=300)
