@@ -108,7 +108,7 @@ if selected_river != st.session_state.selected_river_state:
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
-# Dynamic live metrics engine tracking unique river levels directly from live government monitoring
+# Live metrics engine
 def load_live_metrics(station_id, lat, lon, fallback_lvl):
     lvl, temp, press, w_txt = fallback_lvl, 12.1, 1014.2, "Slight Rain 🌦️"
     try:
@@ -116,8 +116,6 @@ def load_live_metrics(station_id, lat, lon, fallback_lvl):
         res = requests.get(ea_url, timeout=3).json()
         if "items" in res and "value" in res["items"]:
             lvl = round(float(res["items"]["value"]), 2)
-        elif "items" in res and isinstance(res["items"], list) and len(res["items"]) > 0:
-            lvl = round(float(res["items"][0]["value"]), 2)
     except:
         pass
     try:
@@ -163,13 +161,17 @@ else:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("💧 Live Gauge Height", f"{live_level} m")
         col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
-        # 🌟 FIXED QC NODE: Corrected mapping layout configurations
         col3.metric("🌤️ Live Weather", str(live_weather))
         col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
         
         # Row 1b: Tide Display Cards
         st.markdown("#### 🌊 Estuary Tidal Matrix Indicators")
         t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-        with t_col1:
-            st.metric(f"⏰ High Water ({meta_info['estuary']})", f"{meta_info['high_time']}")
-        with t_col2:
+        t_col1.metric(f"⏰ High Water ({meta_info['estuary']})", f"{meta_info['high_time']}")
+        t_col2.metric("📈 High Water Level", f"{meta_info['high_level']}")
+        t_col3.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
+        t_col4.metric("📉 Low Water Level", f"{meta_info['low_level']}")
+
+        # Navigation Channel Trigger Button
+        st.markdown("---")
+        st.markdown("### 📈 Trend Logs Analysis Channel")
