@@ -97,7 +97,6 @@ RIVER_DATA = {
 }
 
 st.sidebar.header("🎯 Target Filters")
-# Added "All Rivers" to the top of the filtering list options
 filter_options = ["All Rivers"] + list(RIVER_DATA.keys())
 selected_river = st.sidebar.selectbox("Select Target River Beat:", filter_options)
 
@@ -143,42 +142,31 @@ def load_historical_weather(lat, lon, target_date):
 # INTERACTIVE MAP PLOTTING & FILTER CONTROL LOGIC
 if selected_river == "All Rivers":
     st.subheader("📍 Northern Catchment Overview (All Monitored Rivers)")
-    
-    # Convert the entire 10-river dictionary into a multi-row table map
     all_rows = []
     for name, data in RIVER_DATA.items():
         all_rows.append({'lat': data['lat'], 'lon': data['lon'], 'name': name})
     map_df = pd.DataFrame(all_rows)
-    
-    # Displays all 10 pins simultaneously zoomed out to cover the North of England
     st.map(map_df, zoom=7)
     st.info("💡 Select a specific river from the sidebar menu dropdown filter to reveal live level telemetry gauges, atmospheric forecasts, and historical logs.")
 
 else:
-    # Logic for individual river selection
     meta = RIVER_DATA[selected_river]
     st.subheader(f"📍 System Focus: {meta['target']}")
-    
     map_df = pd.DataFrame({'lat': [meta['lat']], 'lon': [meta['lon']], 'name': [selected_river]})
     st.map(map_df, zoom=11)
-    
     st.markdown("---")
     
-    # Load data analytics arrays
     live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta["ea_station"], meta["lat"], meta["lon"])
     history_data = load_historical_weather(meta["lat"], meta["lon"], past_date)
 
-    # Row 1: Live Environmental Blocks
     st.markdown("### 🔴 Live Conditions Right Now")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("💧 Live Gauge Height", f"{live_level} m")
     col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
     col3.metric("🌤️ Live Weather", str(live_weather))
     col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
-
     st.markdown("---")
 
-    # Row 2: Premium Historical Atmospheric Conditions Card Blocks
     st.markdown(f"### 🗓️ Historical Atmospheric Conditions Log ({past_date.strftime('%d %B %Y')})")
     if history_data:
         h_col1, h_col2, h_col3, h_col4 = st.columns(4)
@@ -188,16 +176,20 @@ else:
         h_col4.metric("🌡️ Max Temperature", f"{history_data['temp']} °C")
     else:
         st.info("No atmospheric history profile found for this specific date timeframe selection.")
-
     st.markdown("---")
 
-    # Row 3: Historic Declared Catch Evaluation Graphs
     st.subheader("📊 Annual Declared Catch Evaluation (5-Year Record Sheets)")
     if os.path.exists("historical_catch_data.csv"):
         df_catch = pd.read_csv("historical_catch_data.csv")
         filtered_df = df_catch[df_catch["River"] == selected_river]
-        
         fig = px.bar(
             filtered_df, 
             x="Year", 
             y="Declared_Catches", 
+            title=f"Official 5-Year Annual Log Returns: {selected_river}",
+            labels={"Declared_Catches": "Total Fish Caught", "Year": "Season"},
+            color_discrete_sequence=["#2ca02c"]
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Please ensure 'historical_catch_data.csv' is placed inside this directory.")
