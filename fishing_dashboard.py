@@ -11,7 +11,7 @@ st.set_page_config(page_title="Angler Pro - Northern Rivers", layout="wide", pag
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "current_view" not in st.session_state:
-    st.session_state.current_view = "Dashboard"  # Dashboard or Trends
+    st.session_state.current_view = "Dashboard"
 
 # Securely pull your invisible login credentials directly from the cloud vault
 SECRET_EMAIL = st.secrets.get("ADMIN_EMAIL", "admin@example.com")
@@ -131,7 +131,6 @@ def load_live_metrics(station_id, lat, lon):
 
 # --- ROUTER RENDERING ENGINES ---
 
-# SCREEN A: MAIN DIRECTORY OVERVIEW MAP
 if st.session_state.selected_river_state == "All Rivers":
     st.markdown("### 🗺️ Catchment Distribution Chart Directory")
     st.info("💡 Select any specific river target from the sidebar dropdown list to unlock real-time water tracking meters, archived logs, and historic charts.")
@@ -142,11 +141,10 @@ if st.session_state.selected_river_state == "All Rivers":
     map_df = pd.DataFrame(all_rows)
     st.map(map_df, zoom=6)
 
-# SCREEN B: PREMIUM RIVER WORKSPACES (Triggers for ALL individual river selections)
 else:
     meta_info = RIVER_DATA[st.session_state.selected_river_state]
     
-    # 🌟 CORE FIX: Split the routing pages globally at the baseline layout tier
+    # PAGE VIEW A: MAIN DASHBOARD SCREEN WITH LIVE METRICS & TIDES
     if st.session_state.current_view == "Dashboard":
         st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
         st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
@@ -175,3 +173,6 @@ else:
         with t_col4:
             st.metric("📉 Low Water Level", f"{meta_info['low_level']}", help="Minimum ebb height.")
 
+        # Flattened layout execution: completely detached from dictionary blocks
+        st.markdown("---")
+        st.markdown("### 📈 Trend Logs Analysis Channel")
