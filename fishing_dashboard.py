@@ -197,4 +197,10 @@ else:
         df_catch = pd.read_csv("historical_catch_data.csv")
         filtered_df = df_catch[df_catch["River"] == selected_river]
         
-        fig = px.bar(filtered_df, x="Year", y="Declared_Catches", 
+     fig = px.bar(filtered_df, x="Year", y="Declared_Catches", 
+             title=f"Official 5-Year Annual Log Returns: {selected_river}",
+             labels={"Declared_Catches": "Total Fish Caught", "Year": "Season"},
+             color_discrete_sequence=["#2ca02c"]
+                  st.plotly_chart(fig, use_container_width=True)
+
+
