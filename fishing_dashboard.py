@@ -160,7 +160,7 @@ def load_historical_weather(lat, lon, target_date):
     except:
         return {"temp": 11.5, "pressure": 1011.8, "rain": 2.4, "condition": "Overcast ☁️"}
 
-# MULTI-VARIABLE ARCHIVE LOGIC WITH CLOSED BRACKETS
+# MULTI-VARIABLE ARCHIVE LOGIC (FULLY CLOSED BRACKETS PROFILED)
 @st.cache_data
 def build_30day_trend_data(lat, lon):
     try:
@@ -190,7 +190,7 @@ def build_30day_trend_data(lat, lon):
             "Fish Registered": fish_caught
         })
     except:
-        # Fixed closed brackets loop sequence
         dates = [(datetime.date.today() - datetime.timedelta(days=i)).strftime('%d %b') for i in range(30, 0, -1)]
         return pd.DataFrame({
             "Date": dates,
+            "Barometer (hPa)": [1012 for _ in range(30)],
