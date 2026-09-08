@@ -10,6 +10,8 @@ st.set_page_config(page_title="Angler Pro - Northern Rivers", layout="wide", pag
 # State Tracking for Safe Member Flow
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+if "current_view" not in st.session_state:
+    st.session_state.current_view = "Dashboard"  # Can be "Dashboard" or "Trends"
 
 # Securely pull your invisible login credentials directly from the cloud vault
 SECRET_EMAIL = st.secrets.get("ADMIN_EMAIL", "admin@example.com")
@@ -28,7 +30,7 @@ if not st.session_state.authenticated:
         * **Live River Levels:** 15-minute intervals directly from Environment Agency sensors.
         * **Barometric Trends:** Real-time surface pressure analysis (Rising vs. Falling).
         * **Estuary Tide Windows:** Perfect timing indicators for when salmon run the system.
-        * **30-Day Multi-Variable Run Trend Analysis Journals.**
+        * **Unlimited History Lookup Engine:** Audit custom date ranges for months or years at a time.
         
         **Subscription Plan:** Only **£9.99/month** (Cancel anytime).
         """)
@@ -83,6 +85,7 @@ st.sidebar.title("🛡️ Angler Pro Controls")
 if st.session_state.selected_river_state != "All Rivers":
     if st.sidebar.button("⬅️ Return to Main Directory", type="primary"):
         st.session_state.selected_river_state = "All Rivers"
+        st.session_state.current_view = "Dashboard"
         st.rerun()
 
 st.sidebar.markdown("---")
@@ -95,22 +98,17 @@ selected_river = st.sidebar.selectbox(
     index=filter_options.index(st.session_state.selected_river_state)
 )
 
-if st.session_state.selected_river_state != "All Rivers":
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📅 Premium Archive Lookup")
-    today = datetime.date.today()
-    default_past_date = today - datetime.timedelta(days=365)
-    past_date = st.sidebar.date_input("Pick a past date to check logs:", default_past_date)
-
 if st.sidebar.button("Log Out"):
     st.session_state.authenticated = False
+    st.session_state.current_view = "Dashboard"
     st.rerun()
 
 if selected_river != st.session_state.selected_river_state:
     st.session_state.selected_river_state = selected_river
+    st.session_state.current_view = "Dashboard"
     st.rerun()
 
-# 🌟 ARMORED DATA PROCESSOR: Fully insulated to protect layouts from API data friction points
+# Live metrics engine
 def load_live_metrics(station_id, lat, lon):
     lvl, temp, press, w_txt = 0.54, 12.1, 1014.2, "Slight Rain 🌦️"
     try:
@@ -145,35 +143,37 @@ if st.session_state.selected_river_state == "All Rivers":
 
 else:
     meta_info = RIVER_DATA[st.session_state.selected_river_state]
-    st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
-    st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
     
-    live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta_info["ea_station"], meta_info["latitude"], meta_info["longitude"])
+    # PAGE VIEW 1: THE CORE LIVE CONDITIONS DASHBOARD SCREEN
+    if st.session_state.current_view == "Dashboard":
+        st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
+        st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
+        
+        live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta_info["ea_station"], meta_info["latitude"], meta_info["longitude"])
 
-    st.markdown("---")
-    
-    # Row 1: Live Environmental Grid
-    st.markdown("### 🔴 Live Conditions Right Now")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("💧 Live Gauge Height", f"{live_level} m")
-    col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
-    col3.metric("🌤️ Live Weather", str(live_weather))
-    col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
-    
-    # Row 1b: Tide Display Cards
-    st.markdown("#### 🌊 Estuary Tidal Matrix Indicators")
-    t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-    with t_col1:
-        st.metric(f"⏰ High Water ({meta_info['estuary']})", f"{meta_info['high_time']}")
-    with t_col2:
-        st.metric("📈 High Water Level", f"{meta_info['high_level']}", help="Peak height. Bigger water levels indicate strong Spring currents pushing fish upriver.")
-    with t_col3:
-        st.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
-    with t_col4:
-        st.metric("📉 Low Water Level", f"{meta_info['low_level']}", help="Minimum ebb height.")
+        st.markdown("---")
+        
+        # Row 1: Live Environmental Grid
+        st.markdown("### 🔴 Live Conditions Right Now")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("💧 Live Gauge Height", f"{live_level} m")
+        col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
+        col3.metric("🌤️ Live Weather", str(live_weather))
+        col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
+        
+        # Row 1b: Tide Display Cards
+        st.markdown("#### 🌊 Estuary Tidal Matrix Indicators")
+        t_col1, t_col2, t_col3, t_col4 = st.columns(4)
+        with t_col1:
+            st.metric(f"⏰ High Water ({meta_info['high_time']})", f"{meta_info['high_time']}")
+        with t_col2:
+            st.metric("📈 High Water Level", f"{meta_info['high_level']}", help="Peak height. Bigger water levels indicate strong Spring currents pushing fish upriver.")
+        with t_col3:
+            st.metric(f"⏰ Low Water ({meta_info['low_time']})", f"{meta_info['low_time']}")
+        with t_col4:
+            st.metric("📉 Low Water Level", f"{meta_info['low_level']}", help="Minimum ebb height.")
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # 30-Day Clickable Toggle Box Component
-    with st.expander("📈 Click Here to Open Premium 30-Day Catch & Condition Multi-Trend Log", expanded=False):
-        st.caption("Reviewing systemic environmental patterns over the past month. Cross-examine barometric shifts and rain metrics to time perfect river runs.")
+        # Redirect Switch Button
+        st.markdown("### 📈 Trend Logs Analysis Channel")
