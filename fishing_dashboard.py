@@ -155,7 +155,7 @@ if st.session_state.current_view == "Dashboard":
         st.session_state.current_view = "Trends"
         st.rerun()
 
-# PAGE VIEW B: UPGRADED DROPDOWN TIME-RANGE ENGINE
+# PAGE VIEW B: COMPLETELY RE-ENGINEERED FLUID DATA MATRIX WINDOW
 else:
     st.title(f"📈 {selected_river} - Custom Timeline Engine")
     
@@ -167,7 +167,6 @@ else:
     st.markdown("### 📅 Select Your Target Log Analysis Windows")
     st.caption("Tap the pre-set dropdown box below to instantly gather macro telemetry snapshots over months or years.")
     
-    # 🌟 NEW PRE-SET DROPDOWN MATRIX MAPPER
     timeframe_mapping = {
         "Past Week (7 Days)": 7,
         "Past Month (30 Days)": 30,
@@ -180,8 +179,9 @@ else:
     selected_label = st.selectbox(
         "Choose History Lookback Window Length:",
         list(timeframe_mapping.keys()),
-        index=1 # Past Month default
+        index=1
     )
     
     total_days = timeframe_mapping[selected_label]
     today = datetime.date.today()
+    
