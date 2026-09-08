@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import datetime
+import plotly.express as px
 import os
 
 # Page Configurations
@@ -30,7 +31,7 @@ if not st.session_state.authenticated:
         * **Live River Levels:** 15-minute intervals directly from Environment Agency sensors.
         * **Barometric Trends:** Real-time surface pressure analysis (Rising vs. Falling).
         * **Estuary Tide Windows:** Perfect timing indicators for when salmon run the system.
-        * **Unlimited History Lookup Engine:** Audit custom date ranges for months or years at a time.
+        * **Unlimited History Lookup Engine:** Graph custom date ranges for months or years at a time.
         
         **Subscription Plan:** Only **£9.99/month** (Cancel anytime).
         """)
@@ -144,7 +145,7 @@ if st.session_state.selected_river_state == "All Rivers":
 else:
     meta_info = RIVER_DATA[st.session_state.selected_river_state]
     
-    # PAGE VIEW A: MAIN DASHBOARD SCREEN WITH LIVE METRICS & TIDES
+    # PAGE VIEW A: MAIN ACTIVE LIVE CONDITIONS DASHBOARD
     if st.session_state.current_view == "Dashboard":
         st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
         st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
@@ -158,7 +159,7 @@ else:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("💧 Live Gauge Height", f"{live_level} m")
         col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
-        col3.metric("🌤️ Live Weather", str(live_weather))
+        st.metric("🌤️ Live Weather", str(live_weather))
         col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
         
         # Row 1b: Tide Display Cards
@@ -173,6 +174,6 @@ else:
         with t_col4:
             st.metric("📉 Low Water Level", f"{meta_info['low_level']}", help="Minimum ebb height.")
 
-        # Flattened layout execution: completely detached from dictionary blocks
         st.markdown("---")
         st.markdown("### 📈 Trend Logs Analysis Channel")
+        if st.button("📊 Open Deep Custom Historic Timeline Analysis Engine →", type="primary", use_container_width=True):
