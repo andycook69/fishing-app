@@ -155,7 +155,7 @@ if st.session_state.current_view == "Dashboard":
         st.session_state.current_view = "Trends"
         st.rerun()
 
-# PAGE VIEW B: COMPLETELY RE-ENGINEERED FLUID DATA MATRIX WINDOW
+# PAGE VIEW B: THE TIMEFRAME DROPDOWN ENGINE PAGE VIEW
 else:
     st.title(f"📈 {selected_river} - Custom Timeline Engine")
     
@@ -185,3 +185,6 @@ else:
     total_days = timeframe_mapping[selected_label]
     today = datetime.date.today()
     
+    dates_list = []
+    fish_list = []
+    level_list = []
