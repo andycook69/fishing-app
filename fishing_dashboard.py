@@ -4,6 +4,8 @@ import requests
 import datetime
 import plotly.express as px
 import os
+from streamlit_folium import st_folium
+import folium
 
 # Page Configurations
 st.set_page_config(page_title="Angler Pro - Northern Rivers", layout="wide", page_icon="🎣")
@@ -96,9 +98,20 @@ RIVER_DATA = {
     "River Aln (Lesbury)": {"lat": 55.4011, "lon": -1.6324, "ea_station": "022112_G_100", "target": "Summer Sea Trout"}
 }
 
+# Use session state to synchronize map clicks cleanly with our sidebar dropdown variables
+if "selected_river_state" not in st.session_state:
+    st.session_state.selected_river_state = "All Rivers"
+
 st.sidebar.header("🎯 Target Filters")
 filter_options = ["All Rivers"] + list(RIVER_DATA.keys())
-selected_river = st.sidebar.selectbox("Select Target River Beat:", filter_options)
+
+# Sidebar updates from map or acts manually
+selected_river = st.sidebar.selectbox(
+    "Select Target River Beat:", 
+    filter_options, 
+    index=filter_options.index(st.session_state.selected_river_state)
+)
+st.session_state.selected_river_state = selected_river
 
 # Premium Historical Date Lookup Calendar Tool
 st.sidebar.markdown("---")
@@ -139,57 +152,53 @@ def load_historical_weather(lat, lon, target_date):
     except:
         return None
 
-# INTERACTIVE MAP PLOTTING & FILTER CONTROL LOGIC
-if selected_river == "All Rivers":
-    st.subheader("📍 Northern Catchment Overview (All Monitored Rivers)")
-    all_rows = []
-    for name, data in RIVER_DATA.items():
-        all_rows.append({'lat': data['lat'], 'lon': data['lon'], 'name': name})
-    map_df = pd.DataFrame(all_rows)
-    st.map(map_df, zoom=7)
-    st.info("💡 Select a specific river from the sidebar menu dropdown filter to reveal live level telemetry gauges, atmospheric forecasts, and historical logs.")
+# UPGRADED HIGH-END FOLIUM INTERACTIVE MAP BUILDER
+st.markdown("### 🗺️ Interactive Catchment Navigation Map")
+st.caption("Click any custom pin popup on the map window to instantly query and reload that river system's telemetry data charts.")
 
+# Set center point based on selection or show overview center
+if st.session_state.selected_river_state == "All Rivers":
+    center_lat, center_lon, map_zoom = 55.1, -2.1, 7
 else:
-    meta = RIVER_DATA[selected_river]
+    center_lat = RIVER_DATA[st.session_state.selected_river_state]["lat"]
+    center_lon = RIVER_DATA[st.session_state.selected_river_state]["lon"]
+    map_zoom = 10
+
+# Instantiate base canvas map
+m = folium.Map(location=[center_lat, center_lon], zoom_start=map_zoom, control_scale=True)
+
+# Generate markers with popups for all 10 systems
+for name, data in RIVER_DATA.items():
+    # Highlights active selected marker with distinct custom coloring
+    m_color = "green" if name == st.session_state.selected_river_state else "blue"
+    
+    folium.Marker(
+        location=[data["lat"], data["lon"]],
+        popup=f"<b>{name}</b><br>{data['target']}<br><br><i>Click again to select file view</i>",
+        tooltip=name,
+        icon=folium.Icon(color=m_color, icon="info-sign")
+    ).add_to(m)
+
+# Capture browser-side user clicks seamlessly
+map_data = st_folium(m, width="100%", height=400, key="interactive_folium_map")
+
+# Event listener parsing router: updates session state instantly when a user clicks an icon
+if map_data and map_data.get("last_object_clicked_tooltip"):
+    clicked_title = map_data["last_object_clicked_tooltip"]
+    if clicked_title in RIVER_DATA and clicked_title != st.session_state.selected_river_state:
+        st.session_state.selected_river_state = clicked_title
+        st.rerun()
+
+st.markdown("---")
+
+# RENDER CHARTS AND DATA ACCORDING TO SYSTEM STATE
+if st.session_state.selected_river_state == "All Rivers":
+    st.info("💡 Select an individual river marker pin directly on the interactive map above or use the sidebar menu dropdown filter to reveal live telemetry analytics and catch log data tables.")
+else:
+    meta = RIVER_DATA[st.session_state.selected_river_state]
     st.subheader(f"📍 System Focus: {meta['target']}")
-    map_df = pd.DataFrame({'lat': [meta['lat']], 'lon': [meta['lon']], 'name': [selected_river]})
-    st.map(map_df, zoom=11)
-    st.markdown("---")
     
     live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta["ea_station"], meta["lat"], meta["lon"])
     history_data = load_historical_weather(meta["lat"], meta["lon"], past_date)
 
-    st.markdown("### 🔴 Live Conditions Right Now")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("💧 Live Gauge Height", f"{live_level} m")
-    col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
-    col3.metric("🌤️ Live Weather", str(live_weather))
-    col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
-    st.markdown("---")
-
-    st.markdown(f"### 🗓️ Historical Atmospheric Conditions Log ({past_date.strftime('%d %B %Y')})")
-    if history_data:
-        h_col1, h_col2, h_col3, h_col4 = st.columns(4)
-        h_col1.metric("📊 Archived Mean Pressure", f"{history_data['pressure']} hPa")
-        h_col2.metric("🌧️ Total Rainfall On Day", f"{history_data['rain']} mm")
-        h_col3.metric("⛅ General Condition", str(history_data['condition']))
-        h_col4.metric("🌡️ Max Temperature", f"{history_data['temp']} °C")
-    else:
-        st.info("No atmospheric history profile found for this specific date timeframe selection.")
-    st.markdown("---")
-
-    st.subheader("📊 Annual Declared Catch Evaluation (5-Year Record Sheets)")
-    if os.path.exists("historical_catch_data.csv"):
-        df_catch = pd.read_csv("historical_catch_data.csv")
-        filtered_df = df_catch[df_catch["River"] == selected_river]
-        fig = px.bar(
-            filtered_df, 
-            x="Year", 
-            y="Declared_Catches", 
-            title=f"Official 5-Year Annual Log Returns: {selected_river}",
-            labels={"Declared_Catches": "Total Fish Caught", "Year": "Season"},
-            color_discrete_sequence=["#2ca02c"]
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("Please ensure 'historical_catch_data.csv' is placed inside this directory.")
+    # Row 1: Live Environmental Blocks
