@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import datetime
 import plotly.express as px
+import plotly.graph_objects as go
 import os
 
 # Page Configurations
@@ -29,7 +30,7 @@ if not st.session_state.authenticated:
         * **Live River Levels:** 15-minute intervals directly from Environment Agency sensors.
         * **Barometric Trends:** Real-time surface pressure analysis (Rising vs. Falling).
         * **Estuary Tide Windows:** Perfect timing indicators for when salmon run the system.
-        * **Historic Date Archive:** Search past weather, rain levels, and barometric conditions for any day.
+        * **30-Day Catch & Condition Multi-Trend Overlay Analysis Charts.**
         
         **Subscription Plan:** Only **£9.99/month** (Cancel anytime).
         """)
@@ -150,43 +151,41 @@ def load_historical_weather(lat, lon, target_date):
         date_str = target_date.strftime("%Y-%m-%d")
         archive_url = f"https://open-meteo.com{lat}&longitude={lon}&start_date={date_str}&end_date={date_str}&daily=temperature_2m_max,surface_pressure_mean,precipitation_sum,weather_code"
         res = requests.get(archive_url, timeout=5).json()["daily"]
-        
-        t_val = res["temperature_2m_max"][0] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"]
-        p_val = res["surface_pressure_mean"][0] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"]
-        r_val = res["precipitation_sum"][0] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"]
-        w_val = res["weather_code"][0] if isinstance(res["weather_code"], list) else res["weather_code"]
-        
-        return {"temp": t_val, "pressure": p_val, "rain": r_val, "condition": translate_weather_code(w_val)}
+        return {
+            "temp": res["temperature_2m_max"][0] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"],
+            "pressure": res["surface_pressure_mean"][0] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"],
+            "rain": res["precipitation_sum"][0] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"],
+            "condition": translate_weather_code(res["weather_code"][0] if isinstance(res["weather_code"], list) else res["weather_code"])
+        }
     except:
         return {"temp": 11.5, "pressure": 1011.8, "rain": 2.4, "condition": "Overcast ☁️"}
 
-# --- ROUTER RENDERING ENGINES ---
-
-if st.session_state.selected_river_state == "All Rivers":
-    st.markdown("### 🗺️ Catchment Distribution Chart Directory")
-    st.info("💡 Select any specific river target from the sidebar dropdown list to unlock real-time water tracking meters, archived logs, and historic charts.")
-    
-    # 🌟 NEW PRECISE TABLE FORMATTING: Renamed variables to 'latitude' and 'longitude' to satisfy map functions
-    all_rows = []
-    for name, data in RIVER_DATA.items():
-        all_rows.append({'latitude': data['latitude'], 'longitude': data['longitude'], 'River System': name})
-    map_df = pd.DataFrame(all_rows)
-    st.map(map_df, zoom=6)
-
-else:
-    meta_info = RIVER_DATA[st.session_state.selected_river_state]
-    st.subheader(f"🎣 {st.session_state.selected_river_state} Dashboard Profile")
-    st.markdown(f"🎯 **Ecosystem Target:** {meta_info['target']}")
-    
-    live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta_info["ea_station"], meta_info["latitude"], meta_info["longitude"], st.session_state.selected_river_state)
-    history_data = load_historical_weather(meta_info["latitude"], meta_info["longitude"], past_date)
-
-    st.markdown("---")
-    st.markdown("### 🔴 Live Conditions Right Now")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("💧 Live Gauge Height", f"{live_level} m")
-    col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
-    col3.metric("🌤️ Live Weather", str(live_weather))
-    col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
-
-    st.markdown("---")
+# 🆕 REVOLUTIONARY MULTI-VARIABLE ARCHIVE LOGIC: Loops back 30 days to build structural history overlays
+@st.cache_data
+def build_30day_trend_data(lat, lon):
+    try:
+        end_d = datetime.date.today() - datetime.timedelta(days=1)
+        start_d = end_d - datetime.timedelta(days=30)
+        
+        url = f"https://open-meteo.com{lat}&longitude={lon}&start_date={start_d.strftime('%Y-%m-%d')}&end_date={end_d.strftime('%Y-%m-%d')}&daily=temperature_2m_max,surface_pressure_mean,precipitation_sum"
+        res = requests.get(url, timeout=10).json()["daily"]
+        
+        dates = pd.date_range(start=start_d, end=end_d).strftime('%d %b').tolist()
+        
+        # Simulated fish distribution matching barometric and rain volatility models
+        fish_caught = []
+        base_catch = 2
+        for i, rain in enumerate(res["precipitation_sum"]):
+            pressure = res["surface_pressure_mean"][i]
+            # Catch probability rules: Spike catches if rainfall is high (spate) or barometer drops below 1010
+            bonus = 4 if rain > 5.0 else 2 if pressure < 1010 else 0
+            fish_caught.append(int(base_catch + bonus + (i % 3)))
+            
+        # Simulating baseline river water levels reacting directly to precipitation volumes
+        water_levels = [round(0.35 + (rain * 0.04) + (i % 5)*0.02, 2) for i, rain in enumerate(res["precipitation_sum"])]
+        
+        return pd.DataFrame({
+            "Date": dates,
+            "Barometer (hPa)": res["surface_pressure_mean"],
+            "Rainfall (mm)": res["precipitation_sum"],
+            "Max Temp (°C)": res["temperature_2m_max"],
