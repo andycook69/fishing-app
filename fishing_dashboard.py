@@ -11,7 +11,7 @@ st.set_page_config(page_title="Angler Pro - Northern Rivers", layout="wide", pag
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "current_view" not in st.session_state:
-    st.session_state.current_view = "Dashboard"  # Can be "Dashboard" or "Trends"
+    st.session_state.current_view = "Dashboard"  # Track whether to display live panels or the trend journals page
 
 # Securely pull your invisible login credentials directly from the cloud vault
 SECRET_EMAIL = st.secrets.get("ADMIN_EMAIL", "admin@example.com")
@@ -103,6 +103,7 @@ if st.sidebar.button("Log Out"):
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
+# 🌟 CRITICAL REPAIR: Listens to the dropdown menu independently from page states to prevent clicking locks
 if selected_river != st.session_state.selected_river_state:
     st.session_state.selected_river_state = selected_river
     st.session_state.current_view = "Dashboard"
@@ -144,7 +145,7 @@ if st.session_state.selected_river_state == "All Rivers":
 else:
     meta_info = RIVER_DATA[st.session_state.selected_river_state]
     
-    # PAGE VIEW 1: THE CORE LIVE CONDITIONS DASHBOARD SCREEN
+    # PAGE VIEW A: MAIN ACTIVE LIVE CONDITIONS DASHBOARD
     if st.session_state.current_view == "Dashboard":
         st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
         st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
@@ -165,15 +166,13 @@ else:
         st.markdown("#### 🌊 Estuary Tidal Matrix Indicators")
         t_col1, t_col2, t_col3, t_col4 = st.columns(4)
         with t_col1:
-            st.metric(f"⏰ High Water ({meta_info['high_time']})", f"{meta_info['high_time']}")
+            st.metric(f"⏰ High Water ({meta_info['estuary']})", f"{meta_info['high_time']}")
         with t_col2:
             st.metric("📈 High Water Level", f"{meta_info['high_level']}", help="Peak height. Bigger water levels indicate strong Spring currents pushing fish upriver.")
         with t_col3:
-            st.metric(f"⏰ Low Water ({meta_info['low_time']})", f"{meta_info['low_time']}")
+            st.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
         with t_col4:
             st.metric("📉 Low Water Level", f"{meta_info['low_level']}", help="Minimum ebb height.")
 
         st.markdown("---")
 
-        # Redirect Switch Button
-        st.markdown("### 📈 Trend Logs Analysis Channel")
