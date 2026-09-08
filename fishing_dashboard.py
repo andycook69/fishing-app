@@ -3,7 +3,6 @@ import pandas as pd
 import requests
 import datetime
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 
 # Page Configurations
@@ -188,6 +187,8 @@ else:
     col3.metric("🌤️ Live Weather", str(live_weather))
     col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
 
-    # 🆕 INDESTRUCTIBLE 30-DAY TREND GENERATOR: Replaces line 170-200 completely without curly brackets errors
+    # 30-Day Trend Chart
     st.markdown("---")
     st.markdown("### 📈 Premium 30-Day Multi-Variable Run Trend Analysis")
+    st.caption("Correlate catch volumes against barometric trends, rainfall spikes, and water levels to track optimal migration intervals.")
+    
