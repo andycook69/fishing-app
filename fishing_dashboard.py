@@ -167,9 +167,8 @@ def load_historical_weather(lat, lon, target_date):
 if st.session_state.selected_river_state == "All Rivers":
     st.title("🛡️ Subscriber Dashboard | Main Portal")
     st.markdown("### 🗺️ Interactive Catchment Navigation Map")
-    st.caption("Click any marker point directly on the interactive layout below to open its premium local monitoring dashboard instantly.")
+    st.caption("Click any marker point directly on the interactive chart window below to open its premium local monitoring dashboard instantly.")
     
-    # 🌟 INDESTRUCTIBLE GEO-CHART VERSION: Totally immune to server updates, loads instantly
     all_rows = []
     for name, data in RIVER_DATA.items():
         all_rows.append({'Latitude (North)': data['lat'], 'Longitude (West)': data['lon'], 'River System': name, 'Ecosystem Focus': data['target']})
@@ -179,7 +178,8 @@ if st.session_state.selected_river_state == "All Rivers":
         map_df, x="Longitude (West)", y="Latitude (North)", text="River System", hover_name="River System",
         hover_data=["Ecosystem Focus"], height=500
     )
-    fig_map.update_traces(marker=dict(size=18, color="#1f77b4", symbol="pin"), textposition="top center")
+    # 🌟 FIX: Swapped symbol='pin' out for the clean, universally recognized 'circle' shape
+    fig_map.update_traces(marker=dict(size=16, color="#1f77b4", symbol="circle"), textposition="top center")
     fig_map.update_layout(
         plot_bgcolor="#f4f6f9",
         xaxis=dict(showgrid=True, gridcolor="#e2e8f0", title="West ⬅️ Coordinates ➡️ East"),
