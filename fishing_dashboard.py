@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 import datetime
-import plotly.express as px
 import os
 
 # Page Configurations
@@ -75,7 +74,6 @@ RIVER_DATA = {
     "River Aln (Lesbury)": {"latitude": 55.4011, "longitude": -1.6324, "ea_station": "022112_G_100", "target": "Summer Sea Trout"}
 }
 
-# Pre-load state trackers
 if "selected_river_state" not in st.session_state:
     st.session_state.selected_river_state = "All Rivers"
 
@@ -97,12 +95,12 @@ selected_river = st.sidebar.selectbox(
     index=filter_options.index(st.session_state.selected_river_state)
 )
 
-# Date Picker for History lookup
-st.sidebar.markdown("---")
-st.sidebar.subheader("📅 Premium Archive Lookup")
-today = datetime.date.today()
-default_past_date = today - datetime.timedelta(days=365)
-past_date = st.sidebar.date_input("Pick a past date to check logs:", default_past_date)
+if st.session_state.selected_river_state != "All Rivers":
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📅 Premium Archive Lookup")
+    today = datetime.date.today()
+    default_past_date = today - datetime.timedelta(days=365)
+    past_date = st.sidebar.date_input("Pick a past date to check logs:", default_past_date)
 
 if st.sidebar.button("Log Out"):
     st.session_state.authenticated = False
@@ -112,7 +110,6 @@ if selected_river != st.session_state.selected_river_state:
     st.session_state.selected_river_state = selected_river
     st.rerun()
 
-# --- HARDCODED DATA AGENTS FOR TOTAL ASSURANCE ---
 def get_safe_fallback_live(river_name):
     fallbacks = {
         "River Tweed (Berwick)": (0.42, 13.4, 1016.1, "Clear Skies ☀️"),
@@ -139,7 +136,8 @@ def load_live_metrics(station_id, lat, lon, river_name):
         meteo_url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=surface_pressure,weathercode&current_weather=true"
         res = requests.get(meteo_url, timeout=5).json()
         temp = res["current_weather"]["temperature"]
-        press = res["hourly./surface_pressure"][-1] if "hourly" in res else 1014.2
+        # 🌟 FIXED TYPO ROW: Removed the broken dot slash format path string completely
+        press = res["hourly"]["surface_pressure"][-1] if "hourly" in res else 1014.2
         w_txt = translate_weather_code(res["current_weather"]["weathercode"])
     except:
         _, temp, press, w_txt = get_safe_fallback_live(river_name)
@@ -187,6 +185,6 @@ else:
     col3.metric("🌤️ Live Weather", str(live_weather))
     col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
 
-    # 🌟 NEW BULLETPROOF DATA JOURNAL DIRECTORY: Renders native text logs that browser canvas blockages cannot hide
+    # Clean text logs data module panel blocks
     st.markdown("---")
     st.markdown("### 📈 Premium 30-Day Catch & Condition Multi-Trend Log")
