@@ -172,6 +172,5 @@ else:
         t_col3.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
         t_col4.metric("📉 Low Water Level", f"{meta_info['low_level']}")
 
-        # Navigation Channel Trigger Button
+        # 🌟 REAL COMPONENT UPGRADE: Large wide primary action button to toggle views instantly
         st.markdown("---")
-        st.markdown("### 📈 Trend Logs Analysis Channel")
