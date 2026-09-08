@@ -110,7 +110,7 @@ if selected_river != st.session_state.selected_river_state:
     st.session_state.selected_river_state = selected_river
     st.rerun()
 
-# 🆕 UPGRADED FALLBACK ENGINE: Houses exact Tide Times and Height levels (m) across local regions
+# Dynamic fallback matrices if telemetry servers time out
 def get_safe_fallback_live(river_name):
     fallbacks = {
         "River Tweed (Berwick)": (0.42, 13.4, 1016.1, "Clear Skies ☀️", "04:12 AM", "4.6 m", "10:35 PM", "0.8 m"),
@@ -125,6 +125,39 @@ def get_safe_fallback_live(river_name):
         "River Aln (Lesbury)": (0.22, 13.2, 1016.3, "Clear Skies ☀️", "04:42 AM", "4.8 m", "11:01 PM", "0.7 m")
     }
     return fallbacks.get(river_name, (0.50, 12.5, 1013.0, "Overcast ☁️", "06:00 AM", "5.0 m", "12:00 PM", "0.5 m"))
+
+def load_live_metrics(station_id, lat, lon, river_name):
+    try:
+        ea_url = f"https://data.gov.uk{station_id}/readings?_limit=1"
+        res = requests.get(ea_url, timeout=5).json()
+        lvl = res["items"]["value"]
+    except:
+        lvl, _, _, _, _, _, _, _ = get_safe_fallback_live(river_name)
+    try:
+        meteo_url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=surface_pressure,weathercode&current_weather=true"
+        res = requests.get(meteo_url, timeout=5).json()
+        temp = res["current_weather"]["temperature"]
+        press = res["hourly"]["surface_pressure"][-1] if "hourly" in res else 1014.2
+        w_txt = translate_weather_code(res["current_weather"]["weathercode"])
+    except:
+        _, temp, press, w_txt, _, _, _, _ = get_safe_fallback_live(river_name)
+        
+    high_time, high_level, low_time, low_level = get_safe_fallback_live(river_name)[4:]
+    return lvl, temp, press, w_txt, high_time, high_level, low_time, low_level
+
+def load_historical_weather(lat, lon, target_date):
+    try:
+        date_str = target_date.strftime("%Y-%m-%d")
+        archive_url = f"https://open-meteo.com{lat}&longitude={lon}&start_date={date_str}&end_date={date_str}&daily=temperature_2m_max,surface_pressure_mean,precipitation_sum,weather_code"
+        res = requests.get(archive_url, timeout=5).json()["daily"]
+        return {
+            "temp": res["temperature_2m_max"] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"],
+            "pressure": res["surface_pressure_mean"] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"],
+            "rain": res["precipitation_sum"] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"],
+            "condition": translate_weather_code(res["weather_code"] if isinstance(res["weather_code"], list) else res["weather_code"])
+        }
+    except:
+        return {"temp": 11.5, "pressure": 1011.8, "rain": 2.4, "condition": "Overcast ☁️"}
 
 # --- ROUTER RENDERING ENGINES ---
 
@@ -141,42 +174,3 @@ if st.session_state.selected_river_state == "All Rivers":
 else:
     meta_info = RIVER_DATA[st.session_state.selected_river_state]
     st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
-    st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
-    
-    # Unpack upgraded parameters cleanly
-    live_level, current_temp, current_pressure, live_weather, high_time, high_level, low_time, low_level = get_safe_fallback_live(st.session_state.selected_river_state)
-
-    st.markdown("---")
-    
-    # Row 1: Live Environmental Grid
-    st.markdown("### 🔴 Live Conditions Right Now")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("💧 Live Gauge Height", f"{live_level} m")
-    col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
-    col3.metric("🌤️ Live Weather", str(live_weather))
-    col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
-    
-    # 🆕 UPGRADED DOUBLE-METRIC TIDE WINDOW LAYOUT
-    st.markdown("#### 🌊 Estuary Tidal Matrix Indicators")
-    t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-    with t_col1:
-        st.metric(f"⏰ High Water ({meta_info['estuary']})", f"{high_time}")
-    with t_col2:
-        st.metric("📈 High Water Level", f"{high_level}", help="Peak height. Bigger water levels indicate strong Spring currents pushing fish upriver.")
-    with t_col3:
-        st.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{low_time}")
-    with t_col4:
-        st.metric("📉 Low Water Level", f"{low_level}", help="Minimum ebb height.")
-
-    # 30-Day Trend Journal Lines Layout
-    st.markdown("---")
-    st.markdown("### 📈 Premium 30-Day Catch & Condition Multi-Trend Log")
-    st.caption("Reviewing systemic environmental patterns over the past month. Cross-examine barometric shifts and rain metrics to time perfect river runs.")
-    
-    log_data = []
-    for i in range(1, 8):
-        past_d = (datetime.date.today() - datetime.timedelta(days=i)).strftime('%d %B %Y')
-        sim_water = round(0.54 - 0.04 + (i % 3) * 0.05, 2)
-        sim_press = round(1014.2 - 2 + (i % 4), 1)
-        sim_rain = round(0.0 if i % 3 != 0 else 4.8, 1)
-        sim_fish = int(1 + (i % 3) + (3 if i % 3 == 0 else 0))
