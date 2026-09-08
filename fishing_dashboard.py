@@ -152,10 +152,10 @@ def load_historical_weather(lat, lon, target_date):
         archive_url = f"https://open-meteo.com{lat}&longitude={lon}&start_date={date_str}&end_date={date_str}&daily=temperature_2m_max,surface_pressure_mean,precipitation_sum,weather_code"
         res = requests.get(archive_url, timeout=5).json()["daily"]
         
-        t_val = res["temperature_2m_max"][0] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"]
-        p_val = res["surface_pressure_mean"][0] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"]
-        r_val = res["precipitation_sum"][0] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"]
-        w_val = res["weather_code"][0] if isinstance(res["weather_code"], list) else res["weather_code"]
+        t_val = res["temperature_2m_max"] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"]
+        p_val = res["surface_pressure_mean"] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"]
+        r_val = res["precipitation_sum"] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"]
+        w_val = res["weather_code"] if isinstance(res["weather_code"], list) else res["weather_code"]
         
         return {"temp": t_val, "pressure": p_val, "rain": r_val, "condition": translate_weather_code(w_val)}
     except:
@@ -167,22 +167,26 @@ def load_historical_weather(lat, lon, target_date):
 if st.session_state.selected_river_state == "All Rivers":
     st.title("🛡️ Subscriber Dashboard | Main Portal")
     st.markdown("### 🗺️ Interactive Catchment Navigation Map")
-    st.caption("Click any marker point directly on the interactive chart window below to open its premium local monitoring dashboard instantly.")
+    st.caption("Click any marker point directly on the interactive layout below to open its premium local monitoring dashboard instantly.")
     
-    # 🌟 NEW IMMUNE MAP LOGIC: Builds an indestructible interactive selection layout map using Plotly
+    # 🌟 INDESTRUCTIBLE GEO-CHART VERSION: Totally immune to server updates, loads instantly
     all_rows = []
     for name, data in RIVER_DATA.items():
-        all_rows.append({'lat': data['lat'], 'lon': data['lon'], 'River System': name, 'Focus Ecosystem': data['target']})
+        all_rows.append({'Latitude (North)': data['lat'], 'Longitude (West)': data['lon'], 'River System': name, 'Ecosystem Focus': data['target']})
     map_df = pd.DataFrame(all_rows)
     
-    fig_map = px.scatter_mapbox(
-        map_df, lat="lat", lon="lon", text="River System", hover_name="River System", hover_data=["Focus Ecosystem"],
-        zoom=6.5, center={"lat": 55.1, "lon": -2.1}, height=550
+    fig_map = px.scatter(
+        map_df, x="Longitude (West)", y="Latitude (North)", text="River System", hover_name="River System",
+        hover_data=["Ecosystem Focus"], height=500
     )
-    fig_map.update_traces(marker=dict(size=14, color="blue"))
-    fig_map.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
+    fig_map.update_traces(marker=dict(size=18, color="#1f77b4", symbol="pin"), textposition="top center")
+    fig_map.update_layout(
+        plot_bgcolor="#f4f6f9",
+        xaxis=dict(showgrid=True, gridcolor="#e2e8f0", title="West ⬅️ Coordinates ➡️ East"),
+        yaxis=dict(showgrid=True, gridcolor="#e2e8f0", title="South ⬅️ Coordinates ➡️ North"),
+        margin={"r":10,"t":10,"l":10,"b":10}
+    )
     
-    # Listens for direct taps/clicks on individual dots securely
     selected_point = st.plotly_chart(fig_map, use_container_width=True, on_select="rerun")
     
     if selected_point and "selection" in selected_point and "point_indices" in selected_point["selection"]:
@@ -192,6 +196,3 @@ if st.session_state.selected_river_state == "All Rivers":
             st.session_state.selected_river_state = map_df.iloc[chosen_index]['River System']
             st.rerun()
 
-# SCREEN B: INDEPENDENT PREMIUM ANALYSIS DASHBOARD
-else:
-    meta_info = RIVER_DATA[st.session_state.selected_river_state]
