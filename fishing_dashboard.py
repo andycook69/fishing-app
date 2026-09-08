@@ -30,7 +30,7 @@ if not st.session_state.authenticated:
         * **Live River Levels:** 15-minute intervals directly from Environment Agency sensors.
         * **Barometric Trends:** Real-time surface pressure analysis (Rising vs. Falling).
         * **Estuary Tide Windows:** Perfect timing indicators for when salmon run the system.
-        * **Unlimited History Lookup Engine:** Graph custom date ranges for months or years at a time.
+        * **Pre-set Timeline Engine:** Analyze history blocks up to 2 full years with a single tap.
         
         **Subscription Plan:** Only **£9.99/month** (Cancel anytime).
         """)
@@ -155,7 +155,7 @@ if st.session_state.current_view == "Dashboard":
         st.session_state.current_view = "Trends"
         st.rerun()
 
-# PAGE VIEW B: UPGRADED EXPERT HISTORICAL CHRONOLOGY SCREEN
+# PAGE VIEW B: UPGRADED DROPDOWN TIME-RANGE ENGINE
 else:
     st.title(f"📈 {selected_river} - Custom Timeline Engine")
     
@@ -164,19 +164,24 @@ else:
         st.rerun()
         
     st.markdown("---")
-    st.markdown("### 📅 Select Your Custom Log Analysis Boundaries")
-    st.caption("Completely un-tied historical archive query channel. Click the box below to select your customized calendar window frame (supports any span up to an entire year or more).")
+    st.markdown("### 📅 Select Your Target Log Analysis Windows")
+    st.caption("Tap the pre-set dropdown box below to instantly gather macro telemetry snapshots over months or years.")
     
-    today = datetime.date.today()
-    default_start = today - datetime.timedelta(days=45)
+    # 🌟 NEW PRE-SET DROPDOWN MATRIX MAPPER
+    timeframe_mapping = {
+        "Past Week (7 Days)": 7,
+        "Past Month (30 Days)": 30,
+        "Past 3 Months (90 Days)": 90,
+        "Past 6 Months (180 Days)": 180,
+        "Past Year (365 Days)": 365,
+        "Past 2 Years (730 Days)": 730
+    }
     
-    date_range = st.date_input(
-        "Select Custom Date Range Window:",
-        value=(default_start, today),
-        max_value=today
+    selected_label = st.selectbox(
+        "Choose History Lookback Window Length:",
+        list(timeframe_mapping.keys()),
+        index=1 # Past Month default
     )
     
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_date, end_date = date_range
-        total_days = (end_date - start_date).days
-        
+    total_days = timeframe_mapping[selected_label]
+    today = datetime.date.today()
