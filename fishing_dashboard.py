@@ -46,7 +46,6 @@ if not st.session_state.authenticated or not st.session_state.subscribed:
         st.markdown("### 🔐 Subscriber Access Portal")
         auth_mode = st.radio("Account Action", ["Sign In", "Create New Subscriber Account"])
         
-        # Paywall Layout text boxes now boot up completely blank and secure
         user_email = st.text_input("Email Address", value="", placeholder="Enter your email")
         user_pass = st.text_input("Password", type="password", value="", placeholder="Enter your password")
         
@@ -76,14 +75,6 @@ def translate_weather_code(code):
     }
     return codes.get(code, f"Code {code}")
 
-# Premium Active Dashboard Interface
-st.title("🛡️ Subscriber Dashboard | Angler Pro Portal")
-
-if st.sidebar.button("Log Out"):
-    st.session_state.authenticated = False
-    st.session_state.subscribed = False
-    st.rerun()
-
 # 10-River System Matrix
 RIVER_DATA = {
     "River Tweed (Berwick)": {"lat": 55.7698, "lon": -2.0076, "ea_station": "021102_G_100", "target": "Supreme Salmon Capital & Heavy Sea Trout"},
@@ -102,30 +93,50 @@ RIVER_DATA = {
 if "selected_river_state" not in st.session_state:
     st.session_state.selected_river_state = "All Rivers"
 
-st.sidebar.header("🎯 Target Filters")
+# --- SIDEBAR INTERFACE COMPONENTS ---
+st.sidebar.title("🛡️ Angler Pro Controls")
+
+# Add a prominent Navigation shortcut button if viewing an independent system dashboard
+if st.session_state.selected_river_state != "All Rivers":
+    if st.sidebar.button("⬅️ Return to Main Catchment Map", type="primary"):
+        st.session_state.selected_river_state = "All Rivers"
+        st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.header("🎯 Target Selector Dropdown")
 filter_options = ["All Rivers"] + list(RIVER_DATA.keys())
 
-# Sidebar Dropdown
 selected_river = st.sidebar.selectbox(
-    "Select Target River Beat:", 
+    "Quick Switch River Venue:", 
     filter_options, 
     index=filter_options.index(st.session_state.selected_river_state)
 )
 
-# Date Picker for History lookup
-st.sidebar.markdown("---")
-st.sidebar.subheader("📅 Premium Archive Lookup")
-past_date = st.sidebar.date_input("Pick a past date to check logs:", datetime.date(2025, 10, 15))
+# Date Picker for History lookup (only active if an individual river dashboard is loaded)
+if st.session_state.selected_river_state != "All Rivers":
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📅 Premium Archive Lookup")
+    past_date = st.sidebar.date_input("Pick a past date to check logs:", datetime.date(2025, 10, 15))
 
-# Live API Fetching with strict error-proofing handles
+if st.sidebar.button("Log Out"):
+    st.session_state.authenticated = False
+    st.session_state.subscribed = False
+    st.rerun()
+
+# Sync dropdown selection immediately with system layout router states
+if selected_river != st.session_state.selected_river_state:
+    st.session_state.selected_river_state = selected_river
+    st.rerun()
+
+# Telemetry Caching Logic for LIVE DATA
 @st.cache_data(ttl=900)
 def load_live_metrics(station_id, lat, lon):
     try:
         ea_url = f"https://data.gov.uk{station_id}/readings?_limit=1"
         res = requests.get(ea_url).json()
-        lvl = res["items"]["value"] if "items" in res and "value" in res["items"] else res["items"][0]["value"]
+        lvl = res["items"]["value"]
     except:
-        lvl = 0.64
+        lvl = 0.85
     try:
         meteo_url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=surface_pressure,weathercode&current_weather=true"
         res = requests.get(meteo_url).json()
@@ -133,10 +144,10 @@ def load_live_metrics(station_id, lat, lon):
         press = res["hourly"]["surface_pressure"][-1]
         w_txt = translate_weather_code(res["current_weather"]["weathercode"])
     except:
-        temp, press, w_txt = 13.1, 1014.2, "Partly Cloudy ⛅"
+        temp, press, w_txt = 12.0, 1012.0, "Clear Skies ☀️"
     return lvl, temp, press, w_txt
 
-# Archived API Fetching with strict error-proofing handles
+# Telemetry Logic for HISTORICAL DATA SEARCH
 @st.cache_data
 def load_historical_weather(lat, lon, target_date):
     try:
@@ -152,51 +163,39 @@ def load_historical_weather(lat, lon, target_date):
     except:
         return {"temp": 11.5, "pressure": 1011.8, "rain": 2.4, "condition": "Overcast ☁️"}
 
-# Render Map Object Canvas
-st.markdown("### 🗺️ Interactive Catchment Navigation Map")
-st.caption("Click any location pin on the map, then tap its popup text banner to instantly load live telemetry variables underneath.")
+# --- SCREEN ROUTING DISPLAY WINDOWS ---
 
-# Maintain geographic centering layout alignment positions
-current_active_view = selected_river if selected_river != "All Rivers" else st.session_state.selected_river_state
-if current_active_view == "All Rivers":
-    center_lat, center_lon, map_zoom = 55.1, -2.1, 7
-else:
-    center_lat = RIVER_DATA[current_active_view]["lat"]
-    center_lon = RIVER_DATA[current_active_view]["lon"]
-    map_zoom = 10
-
-m = folium.Map(location=[center_lat, center_lon], zoom_start=map_zoom, control_scale=True)
-
-# Plot pins manually
-for name, data in RIVER_DATA.items():
-    m_color = "green" if name == current_active_view else "blue"
-    folium.Marker(
-        location=[data["lat"], data["lon"]],
-        popup=f"<div style='min-width:150px;'><b>{name}</b><br><span style='color:gray;'>Click text here to unlock views</span></div>",
-        tooltip=name,
-        icon=folium.Icon(color=m_color, icon="info-sign")
-    ).add_to(m)
-
-# Capture active clicks
-map_data = st_folium(m, width="100%", height=380, key="interactive_folium_map")
-
-# 🆕 ROBUST ROUTER: Listens for map interaction clicks and syncs state instantly
-if map_data and map_data.get("last_object_clicked_tooltip"):
-    map_selection = map_data["last_object_clicked_tooltip"]
-    if map_selection in RIVER_DATA and map_selection != st.session_state.selected_river_state:
-        st.session_state.selected_river_state = map_selection
-        st.rerun()
-elif selected_river != st.session_state.selected_river_state:
-    st.session_state.selected_river_state = selected_river
-
-st.markdown("---")
-
-# DISPLAY MODULE ENGINE
+# SCREEN A: THE OVERVIEW MAP VIEW SCREEN (Runs only if no river is focused)
 if st.session_state.selected_river_state == "All Rivers":
-    st.subheader("📍 Northern Catchment Overview (All Monitored Rivers)")
-    st.info("💡 Select an individual river marker pin directly on the interactive map above or use the sidebar menu dropdown filter to reveal live telemetry analytics and catch log data tables.")
-else:
-    st.subheader(f"📍 System Focus: {st.session_state.selected_river_state}")
-    meta_info = RIVER_DATA[st.session_state.selected_river_state]
+    st.title("🛡️ Subscriber Dashboard | Main Portal")
+    st.markdown("### 🗺️ Interactive Catchment Navigation Map")
+    st.caption("Click any location pin on the map, then tap its popup text bar link to jump directly onto that river system's premium analytics screen.")
     
-    # Fire off protected live data loaders
+    # Render full centered map canvas viewport
+    m = folium.Map(location=[55.1, -2.1], zoom_start=7, control_scale=True)
+    
+    for name, data in RIVER_DATA.items():
+        folium.Marker(
+            location=[data["lat"], data["lon"]],
+            popup=f"<div style='min-width:160px;'><b>{name}</b><br><span style='color:green;'>Click text link here to view metrics dashboard</span></div>",
+            tooltip=name,
+            icon=folium.Icon(color="blue", icon="info-sign")
+        ).add_to(m)
+        
+    map_data = st_folium(m, width="100%", height=500, key="main_canvas_map")
+    
+    # Event Router listener tracking popup link clicks
+    if map_data and map_data.get("last_object_clicked_tooltip"):
+        map_selection = map_data["last_object_clicked_tooltip"]
+        if map_selection in RIVER_DATA:
+            st.session_state.selected_river_state = map_selection
+            st.rerun()
+
+# SCREEN B: INDEPENDENT PREMIUM ANALYSIS DASHBOARD (Loads cleanly after selecting a river)
+else:
+    meta_info = RIVER_DATA[st.session_state.selected_river_state]
+    st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
+    st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
+    
+    # Fetch live level metrics and data archive parameters
+    live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta_info["ea_station"], meta_info["lat"], meta_info["lon"])
