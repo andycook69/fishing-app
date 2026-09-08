@@ -70,19 +70,15 @@ RIVER_DATA = {
 }
 
 st.sidebar.title("🛡️ Angler Pro Controls")
-selected_river = st.sidebar.selectbox("Quick Switch River Venue:", list(RIVER_DATA.keys()), index=0)
+# 🌟 FIXED QC LINE 80: Removed the broken index tracking query completely
+selected_river = st.sidebar.selectbox("Quick Switch River Venue:", list(RIVER_DATA.keys()))
 
 if st.sidebar.button("Log Out"):
     st.session_state.authenticated = False
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
-if selected_river != st.session_state.selected_river_state:
-    st.session_state.selected_river_state = selected_river
-    st.session_state.current_view = "Dashboard"
-    st.rerun()
-
-# Real-time metrics crawler
+# Real-time telemetry crawler
 def load_live_metrics(station_id, lat, lon, fallback_lvl):
     lvl, temp, press, w_txt = fallback_lvl, 12.1, 1014.2, "Slight Rain 🌦️"
     try:
@@ -155,7 +151,6 @@ else:
     days_lookup = {"Past Week (7 Days)": 7, "Past Month (30 Days)": 30, "Past 3 Months (90 Days)": 90, "Past 6 Months (180 Days)": 180}
     total_days = days_lookup[selected_label]
     
-    # 🌟 CORE LOCALIZATION FIX: Multiplies calculations unique to each river's seed ID and water profile baseline
     river_seed = meta_info["id_num"]
     base_calc = float(meta_info["base_level"])
     
@@ -167,3 +162,6 @@ else:
     
     st.markdown("#### 📊 Timeline Parameter Analysis Analytics Chart")
     st.line_chart(chart_data, height=350)
+    
+    st.markdown("#### 📓 Premium Catchment History Record Sheets")
+    st.dataframe(chart_data, use_container_width=True, height=300)
