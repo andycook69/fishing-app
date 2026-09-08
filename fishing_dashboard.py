@@ -64,9 +64,9 @@ def translate_weather_code(code):
 
 # 10-River System Matrix with precise station IDs and custom unique baselines
 RIVER_DATA = {
+    "Border Esk (Longtown)": {"latitude": 55.0084, "longitude": -2.9734, "ea_station": "022104", "base_level": 0.54, "target": "World-Class Sea Trout & Late Salmon", "estuary": "Silloth Harbour", "high_time": "06:24 AM", "high_level": "7.8 m", "low_time": "12:48 PM", "low_level": "0.4 m"},
     "River Tweed (Berwick)": {"latitude": 55.7698, "longitude": -2.0076, "ea_station": "021102", "base_level": 0.45, "target": "Supreme Salmon Capital & Heavy Sea Trout", "estuary": "Berwick Pier", "high_time": "04:12 AM", "high_level": "4.6 m", "low_time": "10:35 PM", "low_level": "0.8 m"},
     "River Till (Heaton Mill)": {"latitude": 55.6321, "longitude": -2.0911, "ea_station": "021106", "base_level": 0.28, "target": "Elite Sea Trout & Autumn Salmon", "estuary": "Berwick Pier", "high_time": "04:12 AM", "high_level": "4.6 m", "low_time": "10:35 PM", "low_level": "0.8 m"},
-    "Border Esk (Longtown)": {"latitude": 55.0084, "longitude": -2.9734, "ea_station": "022104", "base_level": 0.54, "target": "World-Class Sea Trout & Late Salmon", "estuary": "Silloth Harbour", "high_time": "06:24 AM", "high_level": "7.8 m", "low_time": "12:48 PM", "low_level": "0.4 m"},
     "River Tyne (Riding Mill)": {"latitude": 54.9525, "longitude": -1.9723, "ea_station": "023157", "base_level": 0.72, "target": "Salmon / Sea Trout Master", "estuary": "North Shields", "high_time": "05:03 AM", "high_level": "5.1 m", "low_time": "11:18 PM", "low_level": "0.5 m"},
     "River Eden (Carlisle)": {"latitude": 54.9032, "longitude": -2.9348, "ea_station": "713101", "base_level": 0.61, "target": "Salmon / Sea Trout", "estuary": "Silloth Harbour", "high_time": "06:24 AM", "high_level": "7.8 m", "low_time": "12:48 PM", "low_level": "0.4 m"},
     "River Derwent (Ouse Bridge)": {"latitude": 54.6542, "longitude": -3.2312, "ea_station": "715101", "base_level": 0.88, "target": "Late-Run Atlantic Salmon", "estuary": "Workington", "high_time": "06:45 AM", "high_level": "8.2 m", "low_time": "01:02 PM", "low_level": "0.3 m"},
@@ -76,35 +76,17 @@ RIVER_DATA = {
     "River Aln (Lesbury)": {"latitude": 55.4011, "longitude": -1.6324, "ea_station": "022112", "base_level": 0.22, "target": "Summer Sea Trout", "estuary": "Amble Harbour", "high_time": "04:42 AM", "high_level": "4.8 m", "low_time": "11:01 PM", "low_level": "0.7 m"}
 }
 
-if "selected_river_state" not in st.session_state:
-    st.session_state.selected_river_state = "All Rivers"
-
 # --- SIDEBAR INTERFACE COMPONENTS ---
 st.sidebar.title("🛡️ Angler Pro Controls")
 
-if st.session_state.selected_river_state != "All Rivers":
-    if st.sidebar.button("⬅️ Return to Main Directory", type="primary"):
-        st.session_state.selected_river_state = "All Rivers"
-        st.session_state.current_view = "Dashboard"
-        st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.header("🎯 Target Selector")
-filter_options = ["All Rivers"] + list(RIVER_DATA.keys())
-
 selected_river = st.sidebar.selectbox(
     "Quick Switch River Venue:", 
-    filter_options, 
-    index=filter_options.index(st.session_state.selected_river_state)
+    list(RIVER_DATA.keys()), 
+    index=0
 )
 
 if st.sidebar.button("Log Out"):
     st.session_state.authenticated = False
-    st.session_state.current_view = "Dashboard"
-    st.rerun()
-
-if selected_river != st.session_state.selected_river_state:
-    st.session_state.selected_river_state = selected_river
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
@@ -131,44 +113,66 @@ def load_live_metrics(station_id, lat, lon, fallback_lvl):
     return lvl, temp, press, w_txt
 
 # --- ROUTER RENDERING ENGINES ---
+meta_info = RIVER_DATA[selected_river]
 
-if st.session_state.selected_river_state == "All Rivers":
-    st.markdown("### 🗺️ Catchment Distribution Chart Directory")
-    st.info("💡 Select any specific river target from the sidebar dropdown list to unlock real-time water tracking meters, archived logs, and historic charts.")
+# PAGE VIEW A: MAIN DASHBOARD SCREEN WITH LIVE METRICS & TIDES
+if st.session_state.current_view == "Dashboard":
+    st.title(f"🎣 {selected_river} Analytics Dashboard")
+    st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
     
-    all_rows = []
-    for name, data in RIVER_DATA.items():
-        all_rows.append({'latitude': data['latitude'], 'longitude': data['longitude'], 'River System': name})
-    map_df = pd.DataFrame(all_rows)
-    st.map(map_df, zoom=6)
+    live_level, current_temp, current_pressure, live_weather = load_live_metrics(
+        meta_info["ea_station"], meta_info["latitude"], meta_info["longitude"], meta_info["base_level"]
+    )
 
+    st.markdown("---")
+    
+    # Row 1: Live Environmental Grid
+    st.markdown("### 🔴 Live Conditions Right Now")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("💧 Live Gauge Height", f"{live_level} m")
+    col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
+    col3.metric("🌤️ Live Weather", str(live_weather))
+    col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
+    
+    # Row 1b: Tide Display Cards
+    st.markdown("#### 🌊 Estuary Tidal Matrix Indicators")
+    t_col1, t_col2, t_col3, t_col4 = st.columns(4)
+    t_col1.metric(f"⏰ High Water ({meta_info['estuary']})", f"{meta_info['high_time']}")
+    t_col2.metric("📈 High Water Level", f"{meta_info['high_level']}")
+    t_col3.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
+    t_col4.metric("📉 Low Water Level", f"{meta_info['low_level']}")
+
+    # Indestructible Navigation Button sitting clean flat on layout timeline
+    st.markdown("---")
+    if st.button("📊 Open Deep Custom Historic Timeline Analysis Engine →", type="primary", use_container_width=True):
+        st.session_state.current_view = "Trends"
+        st.rerun()
+
+# PAGE VIEW B: THE SEPARATE DUAL-CALENDAR UNLIMITED DATE TIMELINE MODULE
 else:
-    meta_info = RIVER_DATA[st.session_state.selected_river_state]
+    st.title(f"📈 {selected_river} - Custom Timeline Engine")
     
-    # 🌟 CORE FIX: Force the Live Dashboard elements to draw completely un-conditional directly on the page layout timeline frame
-    if st.session_state.current_view == "Dashboard":
-        st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
-        st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
+    if st.button("⬅️ Back to Live Conditions Dashboard", type="secondary"):
+        st.session_state.current_view = "Dashboard"
+        st.rerun()
         
-        live_level, current_temp, current_pressure, live_weather = load_live_metrics(
-            meta_info["ea_station"], meta_info["latitude"], meta_info["longitude"], meta_info["base_level"]
-        )
-
+    st.markdown("---")
+    st.markdown("### 📅 Select Your Custom Log Analysis Boundaries")
+    st.caption("Completely un-tied historical archive query channel. Click the box below to select your customized calendar window frame (supports any span up to an entire year or more).")
+    
+    today = datetime.date.today()
+    default_start = today - datetime.timedelta(days=45)
+    
+    date_range = st.date_input(
+        "Select Custom Date Range Window:",
+        value=(default_start, today),
+        max_value=today
+    )
+    
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start_date, end_date = date_range
+        total_days = (end_date - start_date).days
+        
+        st.markdown(f"**📍 Active Query Window Frame:** Compiled **{total_days} continuous days** of history logs between **{start_date.strftime('%d %b %Y')}** and **{end_date.strftime('%d %b %Y')}**")
         st.markdown("---")
         
-        # Row 1: Live Environmental Grid
-        st.markdown("### 🔴 Live Conditions Right Now")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("💧 Live Gauge Height", f"{live_level} m")
-        col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
-        col3.metric("🌤️ Live Weather", str(live_weather))
-        col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
-        
-        # Row 1b: Tide Display Cards
-        st.markdown("#### 🌊 Estuary Tidal Matrix Indicators")
-        t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-        t_col1.metric(f"⏰ High Water ({meta_info['estuary']})", f"{meta_info['high_time']}")
-        t_col2.metric("📈 High Water Level", f"{meta_info['high_level']}")
-        t_col3.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
-        t_col4.metric("📉 Low Water Level", f"{meta_info['low_level']}")
-
