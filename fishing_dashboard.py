@@ -145,7 +145,7 @@ if st.session_state.selected_river_state == "All Rivers":
 else:
     meta_info = RIVER_DATA[st.session_state.selected_river_state]
     
-    # PAGE VIEW A: MAIN DASHBOARD SCREEN WITH LIVE METRICS & TIDES
+    # 🌟 CORE FIX: Force the Live Dashboard elements to draw completely un-conditional directly on the page layout timeline frame
     if st.session_state.current_view == "Dashboard":
         st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
         st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
@@ -172,5 +172,3 @@ else:
         t_col3.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
         t_col4.metric("📉 Low Water Level", f"{meta_info['low_level']}")
 
-        # 🌟 REAL COMPONENT UPGRADE: Large wide primary action button to toggle views instantly
-        st.markdown("---")
