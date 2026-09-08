@@ -77,7 +77,12 @@ if st.sidebar.button("Log Out"):
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
-# Real-time metrics crawler
+if selected_river != st.session_state.selected_river_state:
+    st.session_state.selected_river_state = selected_river
+    st.session_state.current_view = "Dashboard"
+    st.rerun()
+
+# Live metrics engine
 def load_live_metrics(station_id, lat, lon, fallback_lvl):
     lvl, temp, press, w_txt = fallback_lvl, 12.1, 1014.2, "Slight Rain 🌦️"
     try:
@@ -131,7 +136,7 @@ if st.session_state.current_view == "Dashboard":
         st.session_state.current_view = "Trends"
         st.rerun()
 
-# PAGE VIEW B: NATIVE ZERO-DEPENDENCY SPREADSHEET ENGINE LAYER
+# PAGE VIEW B: NATIVE SPREADSHEET ENGINE LAYER
 else:
     st.title(f"📈 {selected_river} - Custom Timeline Engine")
     
@@ -158,7 +163,6 @@ else:
     st.markdown(f"**📍 Active Query Window Frame:** Compiled **{total_days} continuous days** of history logs preceding today.")
     st.markdown("---")
     
-    # 🌟 CORE ZERO-DEPENDENCY UPGRADE: Generates a fully compiled, native structured dictionary grid box
     dates_list = []
     level_list = []
     rain_list = []
@@ -167,7 +171,6 @@ else:
     
     current_water = base_calc
     for i in range(total_days):
-        # Rolling volatile algorithm calculations tracking authentic seasonal sequences
         day_label = (today - datetime.timedelta(days=total_days - i)).strftime('%d %b %Y')
         dates_list.append(day_label)
         
