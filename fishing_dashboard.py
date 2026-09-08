@@ -76,6 +76,9 @@ RIVER_DATA = {
     "River Aln (Lesbury)": {"latitude": 55.4011, "longitude": -1.6324, "ea_station": "022112", "base_level": 0.22, "target": "Summer Sea Trout", "estuary": "Amble Harbour", "high_time": "04:42 AM", "high_level": "4.8 m", "low_time": "11:01 PM", "low_level": "0.7 m"}
 }
 
+if "selected_river_state" not in st.session_state:
+    st.session_state.selected_river_state = "All Rivers"
+
 # --- SIDEBAR INTERFACE COMPONENTS ---
 st.sidebar.title("🛡️ Angler Pro Controls")
 
@@ -87,6 +90,11 @@ selected_river = st.sidebar.selectbox(
 
 if st.sidebar.button("Log Out"):
     st.session_state.authenticated = False
+    st.session_state.current_view = "Dashboard"
+    st.rerun()
+
+if selected_river != st.session_state.selected_river_state:
+    st.session_state.selected_river_state = selected_river
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
@@ -142,13 +150,12 @@ if st.session_state.current_view == "Dashboard":
     t_col3.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
     t_col4.metric("📉 Low Water Level", f"{meta_info['low_level']}")
 
-    # Indestructible Navigation Button sitting clean flat on layout timeline
     st.markdown("---")
     if st.button("📊 Open Deep Custom Historic Timeline Analysis Engine →", type="primary", use_container_width=True):
         st.session_state.current_view = "Trends"
         st.rerun()
 
-# PAGE VIEW B: THE SEPARATE DUAL-CALENDAR UNLIMITED DATE TIMELINE MODULE
+# PAGE VIEW B: UPGRADED EXPERT HISTORICAL CHRONOLOGY SCREEN
 else:
     st.title(f"📈 {selected_river} - Custom Timeline Engine")
     
@@ -172,7 +179,4 @@ else:
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
         total_days = (end_date - start_date).days
-        
-        st.markdown(f"**📍 Active Query Window Frame:** Compiled **{total_days} continuous days** of history logs between **{start_date.strftime('%d %b %Y')}** and **{end_date.strftime('%d %b %Y')}**")
-        st.markdown("---")
         
