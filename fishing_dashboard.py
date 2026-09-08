@@ -110,6 +110,7 @@ if selected_river != st.session_state.selected_river_state:
     st.session_state.selected_river_state = selected_river
     st.rerun()
 
+# Streamlined live metrics fetcher
 def load_live_metrics(station_id, lat, lon):
     try:
         ea_url = f"https://data.gov.uk{station_id}/readings?_limit=1"
@@ -158,6 +159,7 @@ else:
     st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
     st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
     
+    # 🌟 SOLID CORRECTION: Unpacks exactly 4 items to match your function logic perfectly
     live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta_info["ea_station"], meta_info["latitude"], meta_info["longitude"])
     history_data = load_historical_weather(meta_info["latitude"], meta_info["longitude"], past_date)
 
@@ -169,6 +171,3 @@ else:
     col1.metric("💧 Live Gauge Height", f"{live_level} m")
     col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
     col3.metric("🌤️ Live Weather", str(live_weather))
-    col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
-    
-    # Row 1b: Tide Display Cards
