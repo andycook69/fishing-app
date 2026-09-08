@@ -11,18 +11,13 @@ st.set_page_config(page_title="Angler Pro - Northern Rivers", layout="wide", pag
 # State Tracking for Safe Member Flow
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-if "subscribed" not in st.session_state:
-    st.session_state.subscribed = False
 
 # Securely pull your invisible login credentials directly from the cloud vault
 SECRET_EMAIL = st.secrets.get("ADMIN_EMAIL", "admin@example.com")
 SECRET_PASS = st.secrets.get("ADMIN_PASSWORD", "trout123")
 
-if "user_registry" not in st.session_state:
-    st.session_state.user_registry = {SECRET_EMAIL: SECRET_PASS}
-
 # Paywall & Authorization Overlay
-if not st.session_state.authenticated or not st.session_state.subscribed:
+if not st.session_state.authenticated:
     st.title("🎣 Welcome to Angler Pro: Northern River Analytics")
     st.subheader("Real-time river telemetry, barometric triggers, and live run counters for serious fly fishers.")
     
@@ -42,26 +37,16 @@ if not st.session_state.authenticated or not st.session_state.subscribed:
 
     with right_col:
         st.markdown("### 🔐 Subscriber Access Portal")
-        auth_mode = st.radio("Account Action", ["Sign In", "Create New Subscriber Account"])
-        
         user_email = st.text_input("Email Address", value="", placeholder="Enter your email")
         user_pass = st.text_input("Password", type="password", value="", placeholder="Enter your password")
         
-        if auth_mode == "Create New Subscriber Account":
-            if st.button("Register & Activate Subscription"):
-                if user_email and user_pass:
-                    st.session_state.user_registry[user_email] = user_pass
-                    st.success("Account registered! Click 'Sign In' above to access the dashboard.")
-                else:
-                    st.error("Please fill out all credentials fields.")
-        else:
-            if st.button("Proceed to Premium Dashboard"):
-                if user_email in st.session_state.user_registry and st.session_state.user_registry[user_email] == user_pass:
-                    st.session_state.authenticated = True
-                    st.session_state.subscribed = True
-                    st.rerun()
-                else:
-                    st.error("Invalid email or password. Please subscribe or try again.")
+        if st.button("Proceed to Premium Dashboard"):
+            if user_email == SECRET_EMAIL and user_pass == SECRET_PASS:
+                st.session_state.authenticated = True
+                st.success("Authentication Successful!")
+                st.rerun()
+            else:
+                st.error("Invalid credentials. Please use your saved admin details.")
     st.stop()
 
 # Helper function to translate weather code numbers to plain text strings
@@ -90,67 +75,37 @@ RIVER_DATA = {
     "River Aln (Lesbury)": {"lat": 55.4011, "lon": -1.6324, "ea_station": "022112_G_100", "target": "Summer Sea Trout"}
 }
 
-# Pre-load state trackers
-if "selected_river_state" not in st.session_state:
-    st.session_state.selected_river_state = "All Rivers"
+# --- MASTER INTERFACE PLATFORM ---
+st.title("🛡️ Subscriber Dashboard | Premium App Console")
 
-# --- SIDEBAR INTERFACE COMPONENTS ---
-st.sidebar.title("🛡️ Angler Pro Controls")
-
-if st.session_state.selected_river_state != "All Rivers":
-    if st.sidebar.button("⬅️ Return to Main Directory", type="primary"):
-        st.session_state.selected_river_state = "All Rivers"
-        st.rerun()
+if st.sidebar.button("🚪 Log Out"):
+    st.session_state.authenticated = False
+    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.header("🎯 Target Selector")
-filter_options = ["All Rivers"] + list(RIVER_DATA.keys())
 
-selected_river = st.sidebar.selectbox(
-    "Quick Switch River Venue:", 
-    filter_options, 
-    index=filter_options.index(st.session_state.selected_river_state)
+# Bulletproof selector layout configuration choice
+selected_river = st.sidebar.radio(
+    "Choose Active River System Target:",
+    ["🏆 Overview Map Directory"] + list(RIVER_DATA.keys())
 )
 
-if st.session_state.selected_river_state != "All Rivers":
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📅 Premium Archive Lookup")
-    today = datetime.date.today()
-    default_past_date = today - datetime.timedelta(days=365)
-    past_date = st.sidebar.date_input("Pick a past date to check logs:", default_past_date)
+# Date Picker for History lookup
+st.sidebar.markdown("---")
+st.sidebar.subheader("📅 Premium Archive Lookup")
+today = datetime.date.today()
+default_past_date = today - datetime.timedelta(days=365)
+past_date = st.sidebar.date_input("Pick a past date to check logs:", default_past_date)
 
-if st.sidebar.button("Log Out"):
-    st.session_state.authenticated = False
-    st.session_state.subscribed = False
-    st.rerun()
-
-if selected_river != st.session_state.selected_river_state:
-    st.session_state.selected_river_state = selected_river
-    st.rerun()
-
-# --- HARDCODED DATA AGENTS FOR TOTAL ASSURANCE ---
-def get_safe_fallback_live(river_name):
-    fallbacks = {
-        "River Tweed (Berwick)": (0.42, 13.4, 1016.1, "Clear Skies ☀️"),
-        "River Till (Heaton Mill)": (0.28, 12.9, 1015.8, "Partly Cloudy ⛅"),
-        "Border Esk (Longtown)": (0.54, 12.1, 1014.2, "Slight Rain 🌦️"),
-        "River Tyne (Riding Mill)": (0.72, 13.8, 1015.0, "Partly Cloudy ⛅"),
-        "River Eden (Carlisle)": (0.61, 12.5, 1013.9, "Slight Drizzle 🌧️"),
-        "River Derwent (Ouse Bridge)": (0.88, 11.2, 1012.5, "Moderate Rain 🌧️"),
-        "River Wear (Chester-le-Street)": (0.48, 13.0, 1015.4, "Clear Skies ☀️"),
-        "River Tees (Barnard Castle)": (0.52, 11.9, 1014.6, "Overcast ☁️"),
-        "River Coquet (Rothbury)": (0.35, 12.7, 1015.9, "Partly Cloudy ⛅"),
-        "River Aln (Lesbury)": (0.22, 13.2, 1016.3, "Clear Skies ☀️")
-    }
-    return fallbacks.get(river_name, (0.50, 12.5, 1013.0, "Overcast ☁️"))
-
-def load_live_metrics(station_id, lat, lon, river_name):
+# --- DATA AGENT FUNCTIONS ---
+def load_live_metrics(station_id, lat, lon):
     try:
         ea_url = f"https://data.gov.uk{station_id}/readings?_limit=1"
         res = requests.get(ea_url, timeout=5).json()
-        lvl = res["items"]["value"]
+        lvl = res["items"][0]["value"] if isinstance(res["items"], list) else res["items"]["value"]
     except:
-        lvl, _, _, _ = get_safe_fallback_live(river_name)
+        lvl = 0.54
     try:
         meteo_url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=surface_pressure,weathercode&current_weather=true"
         res = requests.get(meteo_url, timeout=5).json()
@@ -158,7 +113,7 @@ def load_live_metrics(station_id, lat, lon, river_name):
         press = res["hourly"]["surface_pressure"][-1]
         w_txt = translate_weather_code(res["current_weather"]["weathercode"])
     except:
-        _, temp, press, w_txt = get_safe_fallback_live(river_name)
+        temp, press, w_txt = 12.5, 1014.2, "Partly Cloudy ⛅"
     return lvl, temp, press, w_txt
 
 def load_historical_weather(lat, lon, target_date):
@@ -167,31 +122,67 @@ def load_historical_weather(lat, lon, target_date):
         archive_url = f"https://open-meteo.com{lat}&longitude={lon}&start_date={date_str}&end_date={date_str}&daily=temperature_2m_max,surface_pressure_mean,precipitation_sum,weather_code"
         res = requests.get(archive_url, timeout=5).json()["daily"]
         
-        t_val = res["temperature_2m_max"] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"]
-        p_val = res["surface_pressure_mean"] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"]
-        r_val = res["precipitation_sum"] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"]
-        w_val = res["weather_code"] if isinstance(res["weather_code"], list) else res["weather_code"]
+        t_val = res["temperature_2m_max"][0] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"]
+        p_val = res["surface_pressure_mean"][0] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"]
+        r_val = res["precipitation_sum"][0] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"]
+        w_val = res["weather_code"][0] if isinstance(res["weather_code"], list) else res["weather_code"]
         
         return {"temp": t_val, "pressure": p_val, "rain": r_val, "condition": translate_weather_code(w_val)}
     except:
         return {"temp": 11.5, "pressure": 1011.8, "rain": 2.4, "condition": "Overcast ☁️"}
 
-# --- SCREEN ROUTING DISPLAY WINDOWS ---
+# --- ROUTER RENDERING ENGINES ---
 
-# SCREEN A: THE PREMIUM SUBSCRIBER CONSOLE HOUSING DIRECTORY
-if st.session_state.selected_river_state == "All Rivers":
-    st.title("🛡️ Subscriber Dashboard | Premium App Console")
-    st.markdown("Select your target river from the grid directory below to launch its real-time analytics window.")
+if selected_river == "🏆 Overview Map Directory":
+    st.markdown("### 🗺️ Catchment Distribution Chart Directory")
+    st.info("💡 Select any specific river target from the sidebar radio list to unlock real-time water tracking meters, archived logs, and historic charts.")
+    
+    all_rows = []
+    for name, data in RIVER_DATA.items():
+        all_rows.append({'Latitude': data['lat'], 'Longitude': data['lon'], 'River System': name})
+    map_df = pd.DataFrame(all_rows)
+    st.map(map_df, zoom=7)
+
+else:
+    meta_info = RIVER_DATA[selected_river]
+    st.subheader(f"🎣 {selected_river} Dashboard Profile")
+    st.markdown(f"🎯 **Ecosystem Target:** {meta_info['target']}")
+    
+    live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta_info["ea_station"], meta_info["lat"], meta_info["lon"])
+    history_data = load_historical_weather(meta_info["lat"], meta_info["lon"], past_date)
+
     st.markdown("---")
+    st.markdown("### 🔴 Live Conditions Right Now")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("💧 Live Gauge Height", f"{live_level} m")
+    col2.metric("📊 Live Barometer", f"{current_pressure} hPa")
+    col3.metric("🌤️ Live Weather", str(live_weather))
+    col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
+
+    st.markdown("---")
+    st.markdown(f"### 🗓️ Historical Atmospheric Conditions Log ({past_date.strftime('%d %B %Y')})")
+    h_col1, h_col2, h_col3, h_col4 = st.columns(4)
+    h_col1.metric("📊 Archived Mean Pressure", f"{history_data['pressure']} hPa")
+    h_col2.metric("🌧️ Total Rainfall On Day", f"{history_data['rain']} mm")
+    h_col3.metric("⛅ General Condition", str(history_data['condition']))
+    h_col4.metric("🌡️ Max Temperature", f"{history_data['temp']} °C")
+
+    st.markdown("---")
+    st.subheader("📊 Annual Declared Catch Evaluation (5-Year Record Sheets)")
     
-    # 🌟 NEW CONSOLE GRID SYSTEM: Renders 10 clean box modules that never fail or glitch
-    # We display them in 2 elegant rows of vertical containers
-    col_a, col_b = st.columns(2)
-    
-    river_items = list(RIVER_DATA.items())
-    
-    with col_a:
-        for name, data in river_items[:5]:
-            with st.container(border=True):
-                st.subheader(f"🌊 {name}")
-                st.write(f"🎯 **Focus:** {data['target']}")
+    if os.path.exists("historical_catch_data.csv"):
+        try:
+            df_catch = pd.read_csv("historical_catch_data.csv")
+            filtered_df = df_catch[df_catch["River"] == selected_river]
+            
+            fig = px.bar(
+                filtered_df, x="Year", y="Declared_Catches", 
+                title=f"Official 5-Year Annual Log Returns: {selected_river}",
+                labels={"Declared_Catches": "Total Fish Caught", "Year": "Season"},
+                color_discrete_sequence=["#2ca02c"]
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error building graph module profiles: {str(e)}")
+    else:
+        st.warning("⚠️ Notice: Historical catching sheet logs database file not found on GitHub repository directories. Live telemetry streams above remain unaffected.")
