@@ -155,10 +155,10 @@ def load_historical_weather(lat, lon, target_date):
         archive_url = f"https://open-meteo.com{lat}&longitude={lon}&start_date={date_str}&end_date={date_str}&daily=temperature_2m_max,surface_pressure_mean,precipitation_sum,weather_code"
         res = requests.get(archive_url).json()["daily"]
         return {
-            "temp": res["temperature_2m_max"][0],
-            "pressure": res["surface_pressure_mean"][0],
-            "rain": res["precipitation_sum"][0],
-            "condition": translate_weather_code(res["weather_code"][0])
+            "temp": res["temperature_2m_max"][0] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"],
+            "pressure": res["surface_pressure_mean"][0] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"],
+            "rain": res["precipitation_sum"][0] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"],
+            "condition": translate_weather_code(res["weather_code"][0] if isinstance(res["weather_code"], list) else res["weather_code"])
         }
     except:
         return {"temp": 11.5, "pressure": 1011.8, "rain": 2.4, "condition": "Overcast ☁️"}
@@ -195,7 +195,3 @@ if st.session_state.selected_river_state == "All Rivers":
 else:
     meta_info = RIVER_DATA[st.session_state.selected_river_state]
     st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
-    st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
-    
-    # Fetch live level metrics and data archive parameters
-    live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta_info["ea_station"], meta_info["lat"], meta_info["lon"])
