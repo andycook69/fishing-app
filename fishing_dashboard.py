@@ -110,7 +110,6 @@ if selected_river != st.session_state.selected_river_state:
     st.session_state.selected_river_state = selected_river
     st.rerun()
 
-# --- STREAMLINED CORE RUN DATA PROCESSOR ---
 def load_live_metrics(station_id, lat, lon):
     try:
         ea_url = f"https://data.gov.uk{station_id}/readings?_limit=1"
@@ -127,6 +126,20 @@ def load_live_metrics(station_id, lat, lon):
     except:
         temp, press, w_txt = 12.1, 1014.2, "Slight Rain 🌦️"
     return lvl, temp, press, w_txt
+
+def load_historical_weather(lat, lon, target_date):
+    try:
+        date_str = target_date.strftime("%Y-%m-%d")
+        archive_url = f"https://open-meteo.com{lat}&longitude={lon}&start_date={date_str}&end_date={date_str}&daily=temperature_2m_max,surface_pressure_mean,precipitation_sum,weather_code"
+        res = requests.get(archive_url, timeout=3).json()["daily"]
+        return {
+            "temp": res["temperature_2m_max"] if isinstance(res["temperature_2m_max"], list) else res["temperature_2m_max"],
+            "pressure": res["surface_pressure_mean"] if isinstance(res["surface_pressure_mean"], list) else res["surface_pressure_mean"],
+            "rain": res["precipitation_sum"] if isinstance(res["precipitation_sum"], list) else res["precipitation_sum"],
+            "condition": translate_weather_code(res["weather_code"] if isinstance(res["weather_code"], list) else res["weather_code"])
+        }
+    except:
+        return {"temp": 11.5, "pressure": 1011.8, "rain": 2.4, "condition": "Overcast ☁️"}
 
 # --- ROUTER RENDERING ENGINES ---
 
@@ -145,8 +158,8 @@ else:
     st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
     st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
     
-    # 🌟 SOLID INTEGRATION: Run the protected API checker natively
     live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta_info["ea_station"], meta_info["latitude"], meta_info["longitude"])
+    history_data = load_historical_weather(meta_info["latitude"], meta_info["longitude"], past_date)
 
     st.markdown("---")
     
@@ -158,21 +171,4 @@ else:
     col3.metric("🌤️ Live Weather", str(live_weather))
     col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
     
-    # Row 1b: Tide Display Cards (Pulling variables directly from our robust dictionary matrix)
-    st.markdown("#### 🌊 Estuary Tidal Matrix Indicators")
-    t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-    with t_col1:
-        st.metric(f"⏰ High Water ({meta_info['estuary']})", f"{meta_info['high_time']}")
-    with t_col2:
-        st.metric("📈 High Water Level", f"{meta_info['high_level']}", help="Peak height. Bigger water levels indicate strong Spring currents pushing fish upriver.")
-    with t_col3:
-        st.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
-    with t_col4:
-        st.metric("📉 Low Water Level", f"{meta_info['low_level']}", help="Minimum ebb height.")
-
-    # 30-Day Trend Journal Lines Layout (Using safe values matched against live constants natively)
-    st.markdown("---")
-    st.markdown("### 📈 Premium 30-Day Catch & Condition Multi-Trend Log")
-    st.caption("Reviewing systemic environmental patterns over the past month. Cross-examine barometric shifts and rain metrics to time perfect river runs.")
-    
-    log_data = []
+    # Row 1b: Tide Display Cards
