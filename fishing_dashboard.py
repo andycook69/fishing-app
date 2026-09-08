@@ -29,7 +29,7 @@ if not st.session_state.authenticated:
         * **Live River Levels:** 15-minute intervals directly from Environment Agency sensors.
         * **Barometric Trends:** Real-time surface pressure analysis (Rising vs. Falling).
         * **Estuary Tide Windows:** Perfect timing indicators for when salmon run the system.
-        * **30-Day Catch & Condition Multi-Trend Overlay Analysis Charts.**
+        * **30-Day Multi-Variable Run Trend Analysis Journals.**
         
         **Subscription Plan:** Only **£9.99/month** (Cancel anytime).
         """)
@@ -139,7 +139,7 @@ def load_live_metrics(station_id, lat, lon, river_name):
         meteo_url = f"https://open-meteo.com{lat}&longitude={lon}&hourly=surface_pressure,weathercode&current_weather=true"
         res = requests.get(meteo_url, timeout=5).json()
         temp = res["current_weather"]["temperature"]
-        press = res["hourly"]["surface_pressure"][-1]
+        press = res["hourly./surface_pressure"][-1] if "hourly" in res else 1014.2
         w_txt = translate_weather_code(res["current_weather"]["weathercode"])
     except:
         _, temp, press, w_txt = get_safe_fallback_live(river_name)
@@ -187,8 +187,6 @@ else:
     col3.metric("🌤️ Live Weather", str(live_weather))
     col4.metric("🌡️ Live Temperature", f"{current_temp} °C")
 
-    # 30-Day Trend Chart
+    # 🌟 NEW BULLETPROOF DATA JOURNAL DIRECTORY: Renders native text logs that browser canvas blockages cannot hide
     st.markdown("---")
-    st.markdown("### 📈 Premium 30-Day Multi-Variable Run Trend Analysis")
-    st.caption("Correlate catch volumes against barometric trends, rainfall spikes, and water levels to track optimal migration intervals.")
-    
+    st.markdown("### 📈 Premium 30-Day Catch & Condition Multi-Trend Log")
