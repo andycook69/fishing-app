@@ -98,20 +98,19 @@ RIVER_DATA = {
     "River Aln (Lesbury)": {"lat": 55.4011, "lon": -1.6324, "ea_station": "022112_G_100", "target": "Summer Sea Trout"}
 }
 
-# Use session state to synchronize map clicks cleanly with our sidebar dropdown variables
+# 🆕 FIXED SYSTEM STATE: Pre-load the dropdown selector securely
 if "selected_river_state" not in st.session_state:
     st.session_state.selected_river_state = "All Rivers"
 
 st.sidebar.header("🎯 Target Filters")
 filter_options = ["All Rivers"] + list(RIVER_DATA.keys())
 
-# Sidebar updates from map or acts manually
+# Sidebar dropdown configuration
 selected_river = st.sidebar.selectbox(
     "Select Target River Beat:", 
     filter_options, 
     index=filter_options.index(st.session_state.selected_river_state)
 )
-st.session_state.selected_river_state = selected_river
 
 # Premium Historical Date Lookup Calendar Tool
 st.sidebar.markdown("---")
@@ -152,53 +151,53 @@ def load_historical_weather(lat, lon, target_date):
     except:
         return None
 
-# UPGRADED HIGH-END FOLIUM INTERACTIVE MAP BUILDER
+# MAP RENDERING BLOCK
 st.markdown("### 🗺️ Interactive Catchment Navigation Map")
 st.caption("Click any custom pin popup on the map window to instantly query and reload that river system's telemetry data charts.")
 
-# Set center point based on selection or show overview center
-if st.session_state.selected_river_state == "All Rivers":
+# Control map zoom based on current state selection
+if selected_river == "All Rivers" and st.session_state.selected_river_state == "All Rivers":
     center_lat, center_lon, map_zoom = 55.1, -2.1, 7
 else:
-    center_lat = RIVER_DATA[st.session_state.selected_river_state]["lat"]
-    center_lon = RIVER_DATA[st.session_state.selected_river_state]["lon"]
+    # If sidebar override happens, adjust map center
+    target_river = selected_river if selected_river != "All Rivers" else st.session_state.selected_river_state
+    center_lat = RIVER_DATA[target_river]["lat"]
+    center_lon = RIVER_DATA[target_river]["lon"]
     map_zoom = 10
 
-# Instantiate base canvas map
 m = folium.Map(location=[center_lat, center_lon], zoom_start=map_zoom, control_scale=True)
 
 # Generate markers with popups for all 10 systems
 for name, data in RIVER_DATA.items():
-    # Highlights active selected marker with distinct custom coloring
-    m_color = "green" if name == st.session_state.selected_river_state else "blue"
+    current_target = selected_river if selected_river != "All Rivers" else st.session_state.selected_river_state
+    m_color = "green" if name == current_target else "blue"
     
     folium.Marker(
         location=[data["lat"], data["lon"]],
-        popup=f"<b>{name}</b><br>{data['target']}<br><br><i>Click again to select file view</i>",
+        popup=f"<b>{name}</b><br>{data['target']}<br><br><i>Click map icon below to select</i>",
         tooltip=name,
         icon=folium.Icon(color=m_color, icon="info-sign")
     ).add_to(m)
 
-# Capture browser-side user clicks seamlessly
+# Capture map click data
 map_data = st_folium(m, width="100%", height=400, key="interactive_folium_map")
 
-# Event listener parsing router: updates session state instantly when a user clicks an icon
+# 🆕 FIXED ROUTER: Prioritizes and saves map interactions without dropping chart visuals
 if map_data and map_data.get("last_object_clicked_tooltip"):
     clicked_title = map_data["last_object_clicked_tooltip"]
-    if clicked_title in RIVER_DATA and clicked_title != st.session_state.selected_river_state:
+    if clicked_title in RIVER_DATA and clicked_title != selected_river:
         st.session_state.selected_river_state = clicked_title
         st.rerun()
+elif selected_river != st.session_state.selected_river_state:
+    st.session_state.selected_river_state = selected_river
 
 st.markdown("---")
 
-# RENDER CHARTS AND DATA ACCORDING TO SYSTEM STATE
+# RENDER DYNAMIC CHARTS BASED ON SAVED STATE KEY
 if st.session_state.selected_river_state == "All Rivers":
+    st.subheader("📍 Northern Catchment Overview (All Monitored Rivers)")
     st.info("💡 Select an individual river marker pin directly on the interactive map above or use the sidebar menu dropdown filter to reveal live telemetry analytics and catch log data tables.")
 else:
     meta = RIVER_DATA[st.session_state.selected_river_state]
-    st.subheader(f"📍 System Focus: {meta['target']}")
+    st.subheader(f"📍 System Focus: {st.session_state.selected_river_state} ({meta['target']})")
     
-    live_level, current_temp, current_pressure, live_weather = load_live_metrics(meta["ea_station"], meta["lat"], meta["lon"])
-    history_data = load_historical_weather(meta["lat"], meta["lon"], past_date)
-
-    # Row 1: Live Environmental Blocks
