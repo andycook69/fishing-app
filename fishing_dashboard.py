@@ -11,7 +11,7 @@ st.set_page_config(page_title="Angler Pro - Northern Rivers", layout="wide", pag
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "current_view" not in st.session_state:
-    st.session_state.current_view = "Dashboard"  # Track whether to display live panels or the trend journals page
+    st.session_state.current_view = "Dashboard"  # Dashboard or Trends
 
 # Securely pull your invisible login credentials directly from the cloud vault
 SECRET_EMAIL = st.secrets.get("ADMIN_EMAIL", "admin@example.com")
@@ -103,7 +103,6 @@ if st.sidebar.button("Log Out"):
     st.session_state.current_view = "Dashboard"
     st.rerun()
 
-# 🌟 CRITICAL REPAIR: Listens to the dropdown menu independently from page states to prevent clicking locks
 if selected_river != st.session_state.selected_river_state:
     st.session_state.selected_river_state = selected_river
     st.session_state.current_view = "Dashboard"
@@ -132,6 +131,7 @@ def load_live_metrics(station_id, lat, lon):
 
 # --- ROUTER RENDERING ENGINES ---
 
+# SCREEN A: MAIN DIRECTORY OVERVIEW MAP
 if st.session_state.selected_river_state == "All Rivers":
     st.markdown("### 🗺️ Catchment Distribution Chart Directory")
     st.info("💡 Select any specific river target from the sidebar dropdown list to unlock real-time water tracking meters, archived logs, and historic charts.")
@@ -142,10 +142,11 @@ if st.session_state.selected_river_state == "All Rivers":
     map_df = pd.DataFrame(all_rows)
     st.map(map_df, zoom=6)
 
+# SCREEN B: PREMIUM RIVER WORKSPACES (Triggers for ALL individual river selections)
 else:
     meta_info = RIVER_DATA[st.session_state.selected_river_state]
     
-    # PAGE VIEW A: MAIN ACTIVE LIVE CONDITIONS DASHBOARD
+    # 🌟 CORE FIX: Split the routing pages globally at the baseline layout tier
     if st.session_state.current_view == "Dashboard":
         st.title(f"🎣 {st.session_state.selected_river_state} Analytics Dashboard")
         st.subheader(f"🎯 Target Ecosystem: {meta_info['target']}")
@@ -173,6 +174,4 @@ else:
             st.metric(f"⏰ Low Water ({meta_info['estuary']})", f"{meta_info['low_time']}")
         with t_col4:
             st.metric("📉 Low Water Level", f"{meta_info['low_level']}", help="Minimum ebb height.")
-
-        st.markdown("---")
 
