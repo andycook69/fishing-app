@@ -94,7 +94,8 @@ def generate_telemetry_data():
 def generate_daily_catch_logs():
     """Generates mock angler daily catch entries for 2026."""
     end_date = pd.Timestamp.now()
-    dates = pd.date_range(end=end_date - pd.Timedelta(days=90), end=end_date)
+    # FIXED: Changed first positional keyword from end= to start=
+    dates = pd.date_range(start=end_date - pd.Timedelta(days=90), end=end_date)
 
     species_list = ["Salmon", "Sea Trout", "Brown Trout"]
     flies = ["Ally's Shrimp", "Cascade", "Willie Gunn", "Stoat's Tail", "Sunk Lure"]
