@@ -29,6 +29,7 @@ import math
 import os
 import re
 from collections import Counter
+from statistics import median
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
@@ -423,21 +424,32 @@ def gauge_daily_levels(station_id: str, rloi_id: str, days: tuple[dt.date, ...])
 
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
-def weather_daily_history(key: str, location: str, days: tuple[dt.date, ...]) -> tuple[dict, bool]:
-    result = {}
+def weather_daily_history(key: str, location: str, days: tuple[dt.date, ...]) -> tuple[dict, dict, bool]:
+    result, pressures = {}, {}
     for day in days:
-        if day == dt.datetime.now(dt.timezone.utc).date():
+        if day == dt.datetime.now(UK_TIME).date():
             continue  # Today's current observation is labelled separately.
         try:
             payload = get_json(WEATHER_HISTORY_API + "?" + urlencode({
                 "key": key, "q": location, "dt": day.isoformat(),
             }), timeout=12)
-            summary = payload["forecast"]["forecastday"][0]["day"]
+            forecast = payload["forecast"]["forecastday"][0]
+            summary = forecast["day"]
             result[day] = str(summary["condition"]["text"])
+            hourly = []
+            for hour in forecast.get("hour", []):
+                try:
+                    value = float(hour["pressure_mb"])
+                    if 800 <= value <= 1100:
+                        hourly.append(value)
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if len(hourly) >= 8:
+                pressures[day] = round(sum(hourly) / len(hourly), 1)
         except Exception:
             # A missing history subscription should never expose the API key in an error.
-            return result, False
-    return result, True
+            return result, pressures, False
+    return result, pressures, True
 
 
 def weather_icon(condition: str) -> str:
@@ -462,6 +474,83 @@ def weather_icon(condition: str) -> str:
     if any(term in words for term in ("sun", "clear")):
         return "☀️"
     return "🌤️"
+
+
+def weather_group(condition: str) -> str | None:
+    """Broad descriptive groups, for comparing local observations only."""
+    words = str(condition or "").lower()
+    if not words or words == "not available":
+        return None
+    if any(term in words for term in ("thunder", "lightning")):
+        return "storm"
+    if any(term in words for term in ("snow", "sleet", "blizzard", "ice")):
+        return "wintery"
+    if any(term in words for term in ("rain", "drizzle", "shower")):
+        return "wet"
+    if any(term in words for term in ("fog", "mist", "haze")):
+        return "misty"
+    if any(term in words for term in ("cloud", "overcast")):
+        return "cloudy"
+    if any(term in words for term in ("sun", "clear")):
+        return "clear"
+    return None
+
+
+def finite_number(value: object) -> float | None:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def catch_condition_light(rows: list[dict], today: dt.date,
+                          current_level: object, current_weather: str,
+                          current_pressure: object) -> tuple[str | None, str]:
+    """Experimental match to completed catch days, not a catch/safety forecast."""
+    level = finite_number(current_level)
+    pressure = finite_number(current_pressure)
+    group = weather_group(current_weather)
+    if level is None or pressure is None or group is None:
+        return None, "A fresh gauge level, current weather and air pressure are all needed."
+    observed = []
+    for row in rows:
+        if row["Date"] >= today:
+            continue
+        salmon = finite_number(row["Reported salmon"])
+        trout = finite_number(row["Reported sea trout"])
+        past_level = finite_number(row["Water level (m)"])
+        past_pressure = finite_number(row["Pressure (hPa)"])
+        past_weather = weather_group(row["Weather"])
+        if (salmon is None or trout is None or past_level is None
+                or past_pressure is None or past_weather is None):
+            continue
+        observed.append((row["Date"], salmon + trout, past_level,
+                         past_pressure, past_weather))
+    positive = [sample for sample in observed if sample[1] > 0]
+    if len(observed) < 4 or len(positive) < 2:
+        return None, (f"Only {len(observed)} complete prior catch/level/weather/pressure "
+                      f"days ({len(positive)} with fish). Need at least four complete "
+                      "days and two catch days for this beat.")
+
+    recent = sorted(observed, key=lambda sample: sample[0])[-3:]
+    catch_points = min(2, sum(sample[1] > 0 for sample in recent))
+    good_levels = [sample[2] for sample in positive]
+    good_pressures = [sample[3] for sample in positive]
+    level_gap = (min(good_levels) - level if level < min(good_levels)
+                 else level - max(good_levels) if level > max(good_levels) else 0)
+    level_points = 2 if level_gap == 0 else 1 if level_gap <= 0.10 else 0
+    pressure_gap = abs(pressure - median(good_pressures))
+    pressure_points = 2 if pressure_gap <= 4 else 1 if pressure_gap <= 8 else 0
+    groups = Counter(sample[4] for sample in positive)
+    weather_points = 2 if group == groups.most_common(1)[0][0] else 1 if group in groups else 0
+    points = catch_points + level_points + pressure_points + weather_points
+    label = "Excellent" if points >= 7 else "Moderate" if points >= 4 else "Poor"
+    note = (f"Experimental match to {len(observed)} recent complete days for this beat "
+            f"({len(positive)} with fish). Catch trend {catch_points}/2 · "
+            f"gauge level {level_points}/2 · weather {weather_points}/2 · "
+            f"pressure {pressure_points}/2. This is not a tested prediction or a safety rating.")
+    return label, note
 
 
 class _CatchTableParser(HTMLParser):
@@ -857,6 +946,7 @@ with st.sidebar:
 
 st.subheader("Current conditions")
 level_col, weather_col, pressure_col, wind_col = st.columns(4)
+current_level_m = None
 if gauge_label != "No gauge selected":
     try:
         gauge = gauge_reading(*station_lookup[gauge_label])
@@ -868,6 +958,10 @@ if gauge_label != "No gauge selected":
                 level_col.metric("River level at gauge", "Stale reading")
             else:
                 level_col.metric("River level at gauge", f"{gauge['value']} {gauge['unit']}")
+            if (dt.timedelta(0) <= dt.datetime.now(dt.timezone.utc) - timestamp
+                    <= dt.timedelta(hours=6)
+                    and str(gauge.get("unit", "")).lower() in {"m", "metres", "metre"}):
+                current_level_m = finite_number(gauge["value"])
             level_col.caption(f"{gauge['station']} · {gauge['measure']} · {gauge['date']} (UTC)")
         else:
             level_col.metric("River level at gauge", "Unavailable")
@@ -927,12 +1021,13 @@ if view == "Last 7 days":
                 levels = gauge_daily_levels(station_id, rloi_id, days)
         except Exception:
             st.caption("The selected government gauge has no accessible seven-day history right now.")
-    conditions = {}
+    conditions, daily_pressures = {}, {}
     history_ok = False
     if weather_key:
-        conditions, history_ok = weather_daily_history(weather_key, location, days)
+        conditions, daily_pressures, history_ok = weather_daily_history(weather_key, location, days)
     if weather and weather.get("current", {}).get("condition", {}).get("text"):
         conditions[today] = "Now: " + weather["current"]["condition"]["text"]
+        daily_pressures[today] = finite_number(weather["current"].get("pressure_mb"))
 
     recent_counts = {}
     fishpal_daily = {}
@@ -962,13 +1057,54 @@ if view == "Last 7 days":
         daily = (fishpal_daily.get(day, {}) if use_fishpal_daily else
                  {"salmon": int(matching["salmon"].sum()),
                   "sea_trout": int(matching["sea_trout"].sum())} if len(matching) else {})
+        day_weather = conditions.get(day)
+        if day_weather is None and not use_fishpal_daily and len(matching):
+            observations = [str(value).strip() for value in matching["weather"]
+                            if str(value).strip()]
+            if observations:
+                day_weather = Counter(observations).most_common(1)[0][0]
+        day_pressure = daily_pressures.get(day)
+        if day_pressure is None and not use_fishpal_daily and len(matching):
+            values = matching["pressure_hpa"].dropna()
+            day_pressure = round(float(values.mean()), 1) if len(values) else None
         rows.append({"Date": day, "Day": day.strftime("%a %d %b"),
                      "Water level (m)": levels.get(day),
+                     "Pressure (hPa)": day_pressure,
                      "Reported salmon": daily.get("salmon"),
                      "Reported sea trout": daily.get("sea_trout"),
-                     "Weather": conditions.get(day, "Not available"),
-                     "Weather icon": weather_icon(conditions.get(day, "Not available"))})
+                     "Weather": day_weather or "Not available",
+                     "Weather icon": weather_icon(day_weather or "Not available")})
     seven = pd.DataFrame(rows)
+    light_scope = "Burnfoot only" if beat == "All beats" and use_fishpal_daily else beat
+    st.subheader(f"Today's indicative fishing conditions · {light_scope}")
+    if beat == "All beats" and not use_fishpal_daily:
+        st.info("⚪ Select a beat to compare today's conditions with its recent catch days. "
+                "An all-beats selection may contain incomplete beat coverage.")
+    else:
+        current_condition = (weather or {}).get("current", {})
+        updated_epoch = finite_number(current_condition.get("last_updated_epoch"))
+        weather_fresh = (updated_epoch is not None and
+                         0 <= dt.datetime.now(dt.timezone.utc).timestamp() - updated_epoch <= 6 * 3600)
+        label, explanation = catch_condition_light(
+            rows, today, current_level_m,
+            current_condition.get("condition", {}).get("text", "") if weather_fresh else "",
+            current_condition.get("pressure_mb") if weather_fresh else None,
+        )
+        if label:
+            lights = {"Excellent": "🟢", "Moderate": "🟠", "Poor": "🔴"}
+            st.markdown(f"### {lights[label]} {label} match")
+        else:
+            st.info("⚪ Not enough data for a traffic-light rating")
+        st.caption(explanation)
+    with st.expander("How the traffic light is calculated"):
+        st.write("An experimental 0–8 point comparison for the selected beat: up to two points "
+                 "each for recent dated catches, today's gauge level compared with "
+                 "successful days, the broad weather category and air pressure compared "
+                 "with successful days. Green is 7–8, amber is 4–6, red is 0–3. "
+                 "At least four complete prior days, including two days with fish, are required. "
+                 "Past weather and pressure are daily observations near the river, not "
+                 "measurements at the exact time or place a fish was caught. "
+                 "The rule has not been scientifically validated and must not be used for safety decisions.")
     plots = []
     # A categorical day axis gives exactly seven positions; a temporal axis
     # inserted several ticks per day and repeated the same formatted date.
@@ -1003,8 +1139,9 @@ if view == "Last 7 days":
     st.caption(f"Gauge: {level_source}; observed daily mean grouped by UK calendar date, "
                "not a reading at the beat. This is a gauge level, not FishPal's height above summer lows. "
                "catch and gauge data are aligned by date, not by exact catch time. Missing days stay blank. "
-               "Weather: daily historical condition for prior days; today is the current observation, "
-               "not a full-day summary. No weather is assigned to individual catches.")
+               "Past weather and pressure use nearby daily history, with reported catch-day "
+               "values as a fallback where supplied; today is the current observation, "
+               "not a full-day summary. Daily history is not the catch-time reading.")
     if level_source.startswith("SEPA"):
         st.caption(f"[SEPA Canonbie station and data]({SEPA_CANONBIE_STATION}); "
                    "[GOV.UK current Canonbie gauge](https://check-for-flooding.service.gov.uk/station/5207). "
