@@ -90,9 +90,16 @@ RIVERS = {
     "Kent": ("Kent", "Kendal, UK"),
     "Leven": ("Leven", "Ulverston, UK"),
 }
+RIVER_LOCATIONS = {"Wear": ("Durham, UK", "Chester-le-Street, UK")}
 # Verified beats can be listed here; imported catch reports also contribute
 # beat names for their own river. Do not infer beat totals from river data.
-KNOWN_BEATS = {"Border Esk": ("Burnfoot",)}
+KNOWN_BEATS = {
+    "Border Esk": ("Burnfoot",),
+    "Tyne": (
+        "Bywell", "Styford", "Warden Fishing", "Dilston",
+        "Haughton Castle", "Chipchase Castle", "Chesters",
+    ),
+}
 ALIASES = {
     "esk (yorks.)": "Esk Yorkshire",
     "esk yorkshire": "Esk Yorkshire",
@@ -865,12 +872,18 @@ with beat_slot:
                "and gauge are river-wide.")
 with st.sidebar:
     st.divider()
+    if river in RIVER_LOCATIONS:
+        chosen_location = st.selectbox("Location on River Wear", RIVER_LOCATIONS[river],
+                                       key=f"river_location_{river}")
+    else:
+        chosen_location = default_weather
     default_gauge_search = "Canonbie" if river == "Border Esk" else "Esk" if "Esk" in river else river
     search_term = st.text_input("Search EA gauge stations",
                                 value=default_gauge_search,
                                 key=f"gauge_search_{river}")
-    location = st.text_input("Weather location (approximate)", value=default_weather,
-                             key=f"weather_location_{river}")
+    location = st.text_input("Weather location (approximate)", value=chosen_location,
+                             key=(f"weather_location_{river}_{chosen_location}"
+                                  if river in RIVER_LOCATIONS else f"weather_location_{river}"))
 
 if report_problems:
     st.warning(f"Skipped {len(report_problems)} invalid/duplicate CSV rows. " + "; ".join(report_problems[:3]))
