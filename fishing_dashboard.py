@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import math
 import os
+import re
 from collections import Counter
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -166,6 +168,44 @@ def search_gauges(query: str) -> list[dict]:
     return get_json(url).get("items", [])
 
 
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def gauges_near(latitude: float, longitude: float) -> list[dict]:
+    # EA documents geographic station lookup; it returns candidates, not a beat reading.
+    url = GAUGE_API + "?" + urlencode({
+        "lat": latitude, "long": longitude, "dist": 75,
+        "parameter": "level", "status": "Active", "_limit": 500,
+    })
+    return get_json(url, timeout=16).get("items", [])
+
+
+def matching_gauges(stations: list[dict], river: str,
+                    latitude: float, longitude: float) -> list[dict]:
+    term = "Esk" if "Esk" in river else river
+    matches = []
+    for station in stations:
+        measures = station.get("measures", [])
+        if isinstance(measures, dict):
+            measures = [measures]
+        if not any(isinstance(measure, dict) and measure.get("parameter") == "level"
+                   and measure.get("qualifier") == "Stage" for measure in measures):
+            continue
+        name = str(station.get("riverName") or station.get("label") or "")
+        if not re.search(r"\b" + re.escape(term) + r"\b", name, flags=re.IGNORECASE):
+            continue
+        try:
+            station_lat = float(station["lat"])
+            station_lon = float(station["long"])
+            distance = 111.2 * math.hypot(
+                station_lat - latitude,
+                (station_lon - longitude) * math.cos(math.radians(latitude)),
+            )
+        except (KeyError, ValueError, TypeError):
+            continue
+        if distance <= 75:
+            matches.append((distance, station))
+    return [station for _, station in sorted(matches, key=lambda item: item[0])]
+
+
 @st.cache_data(ttl=15 * 60, show_spinner=False)
 def gauge_reading(station_id: str) -> dict:
     # Station IDs come only from the government response or a fixed value below.
@@ -304,8 +344,12 @@ with st.sidebar:
     beat = st.selectbox("Beat (current-year reports only)", ["All beats", *beat_options])
     st.caption("EA historical catches are river-wide; selecting a beat cannot narrow them.")
     st.divider()
-    search_term = st.text_input("Search EA gauge stations", value=("Canonbie" if river == "Border Esk" else river))
-    location = st.text_input("Weather location (approximate)", value=default_weather)
+    default_gauge_search = "Canonbie" if river == "Border Esk" else "Esk" if "Esk" in river else river
+    search_term = st.text_input("Search EA gauge stations",
+                                value=default_gauge_search,
+                                key=f"gauge_search_{river}")
+    location = st.text_input("Weather location (approximate)", value=default_weather,
+                             key=f"weather_location_{river}")
 
 if report_problems:
     st.warning(f"Skipped {len(report_problems)} invalid/duplicate CSV rows. " + "; ".join(report_problems[:3]))
@@ -317,20 +361,58 @@ except Exception as exc:
     st.error(f"Official catch archive unavailable: {exc}")
 
 try:
-    stations = search_gauges(search_term.strip()) if search_term.strip() else []
-except Exception:
+    weather_key = st.secrets.get("WEATHER_API_KEY", os.getenv("WEATHER_API_KEY", ""))
+except (FileNotFoundError, KeyError):
+    weather_key = os.getenv("WEATHER_API_KEY", "")
+weather = None
+weather_error = None
+if weather_key:
+    try:
+        weather = current_weather(weather_key, location)
+    except Exception as exc:
+        weather_error = str(exc)
+
+nearby = []
+gauge_error = None
+if weather:
+    try:
+        nearby = matching_gauges(
+            gauges_near(float(weather["location"]["lat"]), float(weather["location"]["lon"])),
+            river, float(weather["location"]["lat"]), float(weather["location"]["lon"]),
+        )
+    except Exception as exc:
+        gauge_error = str(exc)
+try:
+    need_search = search_term.strip() and (not nearby or search_term.strip() != default_gauge_search)
+    stations = search_gauges(search_term.strip()) if need_search else []
+except Exception as exc:
     stations = []
+    if not nearby:
+        gauge_error = str(exc)
 station_lookup = {}
+if river == "Border Esk":
+    station_lookup["Canonbie (Border Esk) [5207]"] = "5207"
+for station in nearby:
+    station_id = str(station.get("notation", ""))
+    if station_id and all(char.isalnum() or char in "_-" for char in station_id):
+        label = f"Nearby: {station.get('label', station_id)} · {station.get('riverName', 'river unspecified')} [{station_id}]"
+        station_lookup[label] = station_id
+automatic_match = bool(station_lookup)
 for station in stations:
     station_id = str(station.get("notation", ""))
     if station_id and all(char.isalnum() or char in "_-" for char in station_id):
-        label = f"{station.get('label', station_id)} · {station.get('riverName', 'river unspecified')} [{station_id}]"
+        label = f"Search: {station.get('label', station_id)} · {station.get('riverName', 'river unspecified')} [{station_id}]"
         station_lookup[label] = station_id
-if river == "Border Esk":
-    station_lookup = {"Canonbie (Border Esk) [5207]": "5207", **station_lookup}
 with st.sidebar:
-    gauge_label = st.selectbox("Nearby gauge (check its river)", ["No gauge selected", *station_lookup])
-    st.caption("Gauge is a selected monitoring station, not a measurement at the beat.")
+    gauge_label = st.selectbox("River-level gauge", ["No gauge selected", *station_lookup],
+                               index=1 if automatic_match else 0,
+                               key=f"selected_gauge_{river}_{location.strip().lower()}")
+    st.caption("Automatically chooses the nearest matching river gauge when available. "
+               "Check the station name; its reading is not measured at the beat.")
+    if gauge_error:
+        st.caption("EA station search currently unavailable: " + gauge_error)
+    elif not automatic_match and river != "Border Esk":
+        st.caption("No nearby matching gauge found automatically. Choose a verified search result if available.")
 
 st.subheader("Current conditions")
 level_col, weather_col, pressure_col, wind_col = st.columns(4)
@@ -338,7 +420,13 @@ if gauge_label != "No gauge selected":
     try:
         gauge = gauge_reading(station_lookup[gauge_label])
         if "value" in gauge:
-            level_col.metric("River level at gauge", f"{gauge['value']} {gauge['unit']}")
+            timestamp = dt.datetime.fromisoformat(str(gauge["date"]).replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=dt.timezone.utc)
+            if dt.datetime.now(dt.timezone.utc) - timestamp > dt.timedelta(hours=48):
+                level_col.metric("River level at gauge", "Stale reading")
+            else:
+                level_col.metric("River level at gauge", f"{gauge['value']} {gauge['unit']}")
             level_col.caption(f"{gauge['station']} · {gauge['measure']} · {gauge['date']} (UTC)")
         else:
             level_col.metric("River level at gauge", "Unavailable")
@@ -349,13 +437,8 @@ if gauge_label != "No gauge selected":
 else:
     level_col.metric("River level at gauge", "Select a gauge")
 
-try:
-    weather_key = st.secrets.get("WEATHER_API_KEY", os.getenv("WEATHER_API_KEY", ""))
-except (FileNotFoundError, KeyError):
-    weather_key = os.getenv("WEATHER_API_KEY", "")
-if weather_key:
+if weather:
     try:
-        weather = current_weather(weather_key, location)
         weather_col.metric("Weather now", weather["current"]["condition"]["text"])
         weather_col.caption(f"{location} · {weather['current']['temp_c']} °C · observed {weather['current']['last_updated']}")
         pressure_col.metric("Barometric pressure now", f"{weather['current']['pressure_mb']} hPa")
@@ -368,12 +451,14 @@ if weather_key:
         weather_col.metric("Weather now", "Unavailable")
         pressure_col.metric("Barometric pressure now", "Unavailable")
         wind_col.metric("Wind now", "Unavailable")
-        weather_col.caption(f"Weather request failed: {exc}")
+        weather_col.caption(f"Weather response unavailable: {exc}")
 else:
-    weather_col.metric("Weather now", "API key needed")
-    pressure_col.metric("Barometric pressure now", "API key needed")
-    wind_col.metric("Wind now", "API key needed")
-    weather_col.caption("Set WEATHER_API_KEY in your deployment secrets.")
+    status = "Unavailable" if weather_key else "API key needed"
+    weather_col.metric("Weather now", status)
+    pressure_col.metric("Barometric pressure now", status)
+    wind_col.metric("Wind now", status)
+    weather_col.caption("Weather request failed: " + weather_error if weather_error else
+                        "Set WEATHER_API_KEY in your deployment secrets.")
 if weather_key:
     st.info("Weather conditions and forecasts are uncertain and may differ at your exact river or time. "
             "They are for general information, not the sole basis for personal safety, boating, "
