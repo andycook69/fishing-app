@@ -4,6 +4,7 @@ GitHub: save this file as app.py and add a requirements.txt containing:
     streamlit>=1.42,<2
     pandas>=2,<3
     openpyxl>=3.1,<4
+    altair>=5,<7
 
 Run: streamlit run app.py
 Optional live weather: set WEATHER_API_KEY in Streamlit deployment secrets
@@ -30,6 +31,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import openpyxl
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -50,6 +52,7 @@ EA_WORKBOOK = (
 GAUGE_API = "https://environment.data.gov.uk/flood-monitoring/id/stations"
 GOV_GAUGE_CSV = "https://check-for-flooding.service.gov.uk/station-csv/"
 WEATHER_API = "https://api.weatherapi.com/v1/current.json"
+WEATHER_HISTORY_API = "https://api.weatherapi.com/v1/history.json"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 # These RLOI IDs are checked against their individual government station pages.
 GOV_DEFAULT_GAUGES = {
@@ -310,6 +313,75 @@ def current_weather(key: str, location: str) -> dict:
     return answer
 
 
+def parse_gauge_csv(content: str, days: list[dt.date]) -> dict[dt.date, float]:
+    by_day = {}
+    for row in csv.DictReader(io.StringIO(content)):
+        try:
+            if row.get("Type(observed/forecast)", "").strip().lower() == "forecast":
+                continue
+            timestamp = dt.datetime.fromisoformat(row["Timestamp (UTC)"].replace("Z", "+00:00"))
+            height = float(row["Height (m)"])
+            if (timestamp.tzinfo and timestamp <= dt.datetime.now(dt.timezone.utc)
+                    and timestamp.date() in days and math.isfinite(height)):
+                by_day.setdefault(timestamp.date(), []).append(height)
+        except (ValueError, KeyError, TypeError):
+            continue
+    return {day: round(sum(values) / len(values), 3) for day, values in by_day.items()}
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def gauge_daily_levels(station_id: str, rloi_id: str, days: tuple[dt.date, ...]) -> dict:
+    if rloi_id:
+        # Same official public station as the current-level tile.
+        body = get_bytes(GOV_GAUGE_CSV + rloi_id, timeout=18).decode("utf-8-sig")
+        return parse_gauge_csv(body, list(days))
+    if not station_id or not all(c.isalnum() or c in "_-" for c in station_id):
+        return {}
+    station = get_json(GAUGE_API + "/" + station_id).get("items", {})
+    if isinstance(station, list):
+        station = station[0] if station else {}
+    measures = station.get("measures", [])
+    if isinstance(measures, dict):
+        measures = [measures]
+    stage = next((m for m in measures if m.get("parameter") == "level"
+                  and m.get("qualifier") == "Stage"), None)
+    identifier = str((stage or {}).get("@id", "")).rstrip("/").rsplit("/", 1)[-1]
+    if not identifier or not all(c.isalnum() or c in "_-" for c in identifier):
+        return {}
+    base = "https://environment.data.gov.uk/flood-monitoring/id/measures/"
+    result = get_json(base + identifier + "/readings?" + urlencode({
+        "startdate": days[0].isoformat(), "enddate": days[-1].isoformat(), "_limit": 10000,
+    }), timeout=22).get("items", [])
+    by_day = {}
+    for reading in result:
+        try:
+            timestamp = dt.datetime.fromisoformat(reading["dateTime"].replace("Z", "+00:00"))
+            level = float(reading["value"])
+            if timestamp.date() in days and math.isfinite(level):
+                by_day.setdefault(timestamp.date(), []).append(level)
+        except (ValueError, TypeError, KeyError):
+            continue
+    return {day: round(sum(values) / len(values), 3) for day, values in by_day.items()}
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def weather_daily_history(key: str, location: str, days: tuple[dt.date, ...]) -> tuple[dict, bool]:
+    result = {}
+    for day in days:
+        if day == dt.datetime.now(dt.timezone.utc).date():
+            continue  # Today's current observation is labelled separately.
+        try:
+            payload = get_json(WEATHER_HISTORY_API + "?" + urlencode({
+                "key": key, "q": location, "dt": day.isoformat(),
+            }), timeout=12)
+            summary = payload["forecast"]["forecastday"][0]["day"]
+            result[day] = str(summary["condition"]["text"])
+        except Exception:
+            # A missing history subscription should never expose the API key in an error.
+            return result, False
+    return result, True
+
+
 class _CatchTableParser(HTMLParser):
     """Read tables under species headings; fail closed if FishPal changes layout."""
 
@@ -322,6 +394,7 @@ class _CatchTableParser(HTMLParser):
         self.row = None
         self.cell = None
         self.tables = []
+        self.section_words = []
 
     def handle_starttag(self, tag, attrs):
         if tag in {"h2", "h3", "h4", "h5"}:
@@ -337,12 +410,15 @@ class _CatchTableParser(HTMLParser):
     def handle_data(self, data):
         if self.heading_tag:
             self.heading_words.append(data)
+        elif self.table is None and self.heading in {"atlantic salmon", "sea trout"}:
+            self.section_words.append(data)
         if self.cell is not None:
             self.cell.append(data)
 
     def handle_endtag(self, tag):
         if tag == self.heading_tag:
             self.heading = " ".join(" ".join(self.heading_words).split()).lower()
+            self.section_words = []
             self.heading_tag = None
         elif tag in {"td", "th"} and self.cell is not None:
             self.row.append(" ".join(" ".join(self.cell).split()))
@@ -352,7 +428,7 @@ class _CatchTableParser(HTMLParser):
                 self.table.append(self.row)
             self.row = None
         elif tag == "table" and self.table is not None:
-            self.tables.append((self.heading, self.table))
+            self.tables.append((self.heading, self.table, " ".join(self.section_words)))
             self.table = None
 
 
@@ -360,7 +436,8 @@ def parse_burnfoot_catches(html: str, year: int) -> dict:
     parser = _CatchTableParser()
     parser.feed(html)
     species_data = {}
-    for heading, rows in parser.tables:
+    last_seven = {}
+    for heading, rows, section_text in parser.tables:
         species = ("salmon" if "atlantic salmon" in heading else
                    "sea_trout" if "sea trout" in heading else None)
         if species is None or species in species_data:
@@ -392,8 +469,12 @@ def parse_burnfoot_catches(html: str, year: int) -> dict:
         ):
             raise ValueError("FishPal monthly figures do not match its annual total")
         species_data[species] = monthly
+        recent = re.search(r"Last\s*7\s*days\s*:\s*([0-9,]+)", section_text, re.I)
+        if recent:
+            last_seven[species] = int(recent.group(1).replace(",", ""))
     if set(species_data) != {"salmon", "sea_trout"}:
         raise ValueError("FishPal Burnfoot catch tables could not be read")
+    species_data["last_seven"] = last_seven
     return species_data
 
 
@@ -468,13 +549,15 @@ def metric_or_dash(value: int | None) -> str:
 
 
 st.title("Northern salmon and sea trout")
-st.caption("Official annual catch returns and 2024 monthly history · current gauge and weather observations")
+st.caption("Daily river and weather conditions · Burnfoot seven-day catches · separate EA history")
 
 with st.sidebar:
     st.header("Filters")
+    view = st.radio("Dashboard page", ["Last 7 days", "Catch history and reports"])
     river = st.selectbox("River", list(RIVERS), index=0)
     official_name, default_weather = RIVERS[river]
-    selected_year = st.selectbox("Official catch season", list(range(2024, 2007, -1)))
+    selected_year = (st.selectbox("Official catch season", list(range(2024, 2007, -1)))
+                     if view == "Catch history and reports" else 2024)
     st.divider()
     st.subheader(f"{CURRENT_YEAR} permissioned catch reports")
     st.caption("Upload only reports you own or have explicit permission to publish. "
@@ -499,11 +582,12 @@ with st.sidebar:
 if report_problems:
     st.warning(f"Skipped {len(report_problems)} invalid/duplicate CSV rows. " + "; ".join(report_problems[:3]))
 
-try:
-    yearly, monthly, grilse_estimates = load_ea_archive()
-except Exception as exc:
-    yearly, monthly, grilse_estimates = {}, {}, {}
-    st.error(f"Official catch archive unavailable: {exc}")
+yearly, monthly, grilse_estimates = {}, {}, {}
+if view == "Catch history and reports":
+    try:
+        yearly, monthly, grilse_estimates = load_ea_archive()
+    except Exception as exc:
+        st.error(f"Official catch archive unavailable: {exc}")
 
 try:
     weather_key = st.secrets.get("WEATHER_API_KEY", os.getenv("WEATHER_API_KEY", ""))
@@ -617,6 +701,81 @@ if weather_key:
             "and relevant authorities when accuracy is critical.")
 
 st.divider()
+if view == "Last 7 days":
+    today = dt.datetime.now(dt.timezone.utc).date()
+    days = tuple(today - dt.timedelta(days=offset) for offset in range(6, -1, -1))
+    st.subheader(f"Past 7 days · {river}" + (f" · {beat}" if beat != "All beats" else ""))
+    levels = {}
+    if gauge_label != "No gauge selected":
+        try:
+            levels = gauge_daily_levels(*station_lookup[gauge_label], days)
+        except Exception:
+            st.caption("The selected government gauge has no accessible seven-day history right now.")
+    conditions = {}
+    history_ok = False
+    if weather_key:
+        conditions, history_ok = weather_daily_history(weather_key, location, days)
+    if weather and weather.get("current", {}).get("condition", {}).get("text"):
+        conditions[today] = "Now: " + weather["current"]["condition"]["text"]
+
+    recent_counts = {}
+    if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
+        try:
+            fishpal_week, retrieved_at = burnfoot_catches(CURRENT_YEAR)
+            recent_counts = fishpal_week.get("last_seven", {})
+            if "salmon" in recent_counts:
+                st.metric("Burnfoot salmon · last 7 days (FishPal)", recent_counts["salmon"])
+            if "sea_trout" in recent_counts:
+                st.caption(f"Burnfoot sea trout in the same period: {recent_counts['sea_trout']}. "
+                           f"[FishPal source]({FISHPAL_BURNFOOT}#CatchesSection), "
+                           f"page retrieved {retrieved_at}.")
+        except Exception:
+            st.warning("Burnfoot's seven-day FishPal total is temporarily unavailable.")
+
+    daily_uploads = reports[reports["river"] == river].copy() if len(reports) else reports.copy()
+    if beat != "All beats" and len(daily_uploads):
+        daily_uploads = daily_uploads[daily_uploads["beat"] == beat]
+    rows = []
+    for day in days:
+        matching = daily_uploads[daily_uploads["date"] == day] if len(daily_uploads) else daily_uploads
+        rows.append({"Date": day, "Water level (m)": levels.get(day),
+                     "CSV-reported salmon": int(matching["salmon"].sum()) if len(daily_uploads) else None,
+                     "Weather": conditions.get(day, "Not available")})
+    seven = pd.DataFrame(rows)
+    plots = []
+    base = alt.Chart(seven).encode(x=alt.X("Date:T", title=None, axis=alt.Axis(format="%a %d %b")))
+    if levels:
+        plots.append(base.mark_line(point=True, color="#0873b9").encode(
+            y=alt.Y("Water level (m):Q", scale=alt.Scale(zero=False)),
+            tooltip=[alt.Tooltip("Date:T", format="%a %d %b"),
+                     alt.Tooltip("Water level (m):Q", format=".3f")]
+        ).properties(height=170, title="Daily mean water level at selected gauge"))
+    if len(daily_uploads):
+        plots.append(base.mark_bar(color="#e77d30", size=25).encode(
+            y=alt.Y("CSV-reported salmon:Q", title="Salmon in uploaded reports"),
+            tooltip=[alt.Tooltip("Date:T", format="%a %d %b"), "CSV-reported salmon:Q"]
+        ).properties(height=140, title="Dated catch reports (not the FishPal total)"))
+    weather_strip = base.mark_rect().encode(
+        y=alt.Y("Weather:N", title="Weather", axis=alt.Axis(labelLimit=220)),
+        color=alt.Color("Weather:N", legend=None, scale=alt.Scale(scheme="tableau20")),
+        tooltip=[alt.Tooltip("Date:T", format="%a %d %b"), "Weather:N"]
+    ).properties(height=150, title="Weather by day · nearby location")
+    plots.append(weather_strip)
+    st.altair_chart(alt.vconcat(*plots).resolve_scale(x="shared"), use_container_width=True)
+    st.dataframe(seven, hide_index=True, use_container_width=True)
+    st.caption("Gauge: observed daily mean in UTC, not a reading at the beat; missing days stay blank. "
+               "Weather: daily historical condition for prior days; today is the current observation, "
+               "not a full-day summary. No weather is assigned to individual catches.")
+    if not levels:
+        st.info("No daily water levels were available for this gauge. Check the gauge selection or its government feed.")
+    if not len(daily_uploads):
+        st.info("FishPal publishes a seven-day Burnfoot total, not daily catch dates. "
+                "Daily salmon bars require dated reports in the catch CSV; the total cannot be split reliably between days.")
+    if not history_ok:
+        st.caption("Past-day weather needs History API access on your WeatherAPI key; "
+                   "unavailable days are not filled with today's weather.")
+    st.stop()
+
 st.subheader(f"Official declared rod catches · {selected_year} · {river}")
 if beat != "All beats":
     st.info("Official figures are available by river, not by beat. They are not shown as Burnfoot/beat catches.")
