@@ -48,9 +48,14 @@ st.markdown("""<style>
         background: linear-gradient(180deg, #edf6f8 0, #f7fafb 310px, #ffffff 620px);
         color: var(--river-ink);
     }
+    /* Keep Streamlit's Share/settings controls, but match their header to the page. */
+    header[data-testid="stHeader"], header.stAppHeader {
+        background: #edf6f8 !important;
+    }
     [data-testid="stSidebar"] { background: #eef4f6; }
     [data-testid="stSidebar"] [data-testid="stWidgetLabel"] { font-weight: 600; }
-    [data-testid="stMainBlockContainer"] { max-width: 1260px; padding-top: 2rem; }
+    /* Leave room for the fixed Streamlit toolbar so the first heading is visible. */
+    [data-testid="stMainBlockContainer"] { max-width: 1260px; padding-top: 4.5rem; }
     h1, h2, h3 { color: var(--river-ink); letter-spacing: -.025em; }
     h1 { font-size: clamp(2rem, 3vw, 3rem) !important; }
     [data-testid="stMetric"] {
@@ -66,7 +71,7 @@ st.markdown("""<style>
         letter-spacing: .12em; text-transform: uppercase; margin: 0 0 .4rem; }
     .river-note { color: #567183; margin: -.4rem 0 1.25rem; }
     @media (max-width: 700px) {
-        [data-testid="stMainBlockContainer"] { padding-top: 1rem; }
+        [data-testid="stMainBlockContainer"] { padding-top: 4rem; }
         [data-testid="stMetric"] { min-height: 95px; padding: .75rem; }
     }
 </style>""", unsafe_allow_html=True)
