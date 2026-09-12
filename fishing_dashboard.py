@@ -11,7 +11,8 @@ or as a server-side environment variable. Never put the key in GitHub.
 
 Data: EA annual declared rod catches (2008–2024, 2024 workbook);
 EA 2024 monthly rod catches and estimated grilse; EA gauge readings;
-WeatherAPI current conditions; optional *permissioned* current-year CSV.
+WeatherAPI current conditions; private-test Burnfoot FishPal monthly figures;
+optional *permissioned* current-year CSV.
 This app has no subscriber authentication or payment integration.
 """
 
@@ -24,6 +25,7 @@ import math
 import os
 import re
 from collections import Counter
+from html.parser import HTMLParser
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -48,6 +50,7 @@ EA_WORKBOOK = (
 GAUGE_API = "https://environment.data.gov.uk/flood-monitoring/id/stations"
 GOV_GAUGE_CSV = "https://check-for-flooding.service.gov.uk/station-csv/"
 WEATHER_API = "https://api.weatherapi.com/v1/current.json"
+FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 # These RLOI IDs are checked against their individual government station pages.
 GOV_DEFAULT_GAUGES = {
     "Border Esk": ("River Esk at Canonbie", "5207"),
@@ -307,6 +310,100 @@ def current_weather(key: str, location: str) -> dict:
     return answer
 
 
+class _CatchTableParser(HTMLParser):
+    """Read tables under species headings; fail closed if FishPal changes layout."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.heading_tag = None
+        self.heading_words = []
+        self.heading = ""
+        self.table = None
+        self.row = None
+        self.cell = None
+        self.tables = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"h2", "h3", "h4", "h5"}:
+            self.heading_tag = tag
+            self.heading_words = []
+        elif tag == "table" and self.table is None:
+            self.table = []
+        elif tag == "tr" and self.table is not None:
+            self.row = []
+        elif tag in {"td", "th"} and self.row is not None:
+            self.cell = []
+
+    def handle_data(self, data):
+        if self.heading_tag:
+            self.heading_words.append(data)
+        if self.cell is not None:
+            self.cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == self.heading_tag:
+            self.heading = " ".join(" ".join(self.heading_words).split()).lower()
+            self.heading_tag = None
+        elif tag in {"td", "th"} and self.cell is not None:
+            self.row.append(" ".join(" ".join(self.cell).split()))
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            if self.row:
+                self.table.append(self.row)
+            self.row = None
+        elif tag == "table" and self.table is not None:
+            self.tables.append((self.heading, self.table))
+            self.table = None
+
+
+def parse_burnfoot_catches(html: str, year: int) -> dict:
+    parser = _CatchTableParser()
+    parser.feed(html)
+    species_data = {}
+    for heading, rows in parser.tables:
+        species = ("salmon" if "atlantic salmon" in heading else
+                   "sea_trout" if "sea trout" in heading else None)
+        if species is None or species in species_data:
+            continue
+        header_index = next((i for i, row in enumerate(rows)
+                             if any(re.sub(r"[^0-9]", "", value) in
+                                    {str(year), str(year)[-2:]} for value in row)), None)
+        if header_index is None:
+            continue
+        header = rows[header_index]
+        year_col = next(i for i, value in enumerate(header)
+                        if re.sub(r"[^0-9]", "", value) in
+                        {str(year), str(year)[-2:]})
+        monthly = {}
+        declared_total = None
+        for row in rows[header_index + 1:]:
+            if len(row) <= year_col:
+                continue
+            label = row[0].strip().lower()[:3]
+            if label == "tot":
+                declared_total = int(row[year_col].replace(",", ""))
+            else:
+                for month in range(1, 13):
+                    if label == dt.date(2000, month, 1).strftime("%b").lower():
+                        monthly[month] = int(row[year_col].replace(",", ""))
+                        break
+        if len(monthly) != 12 or declared_total != sum(monthly.values()) or any(
+            value < 0 for value in monthly.values()
+        ):
+            raise ValueError("FishPal monthly figures do not match its annual total")
+        species_data[species] = monthly
+    if set(species_data) != {"salmon", "sea_trout"}:
+        raise ValueError("FishPal Burnfoot catch tables could not be read")
+    return species_data
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def burnfoot_catches(year: int) -> tuple[dict, str]:
+    fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    html = get_bytes(FISHPAL_BURNFOOT, timeout=20).decode("utf-8", errors="replace")
+    return parse_burnfoot_catches(html, year), fetched_at
+
+
 def clean_reports(upload, selected_year: int) -> tuple[pd.DataFrame, list[str]]:
     columns = [
         "report_id", "date", "river", "beat", "salmon", "grilse", "sea_trout",
@@ -380,7 +477,8 @@ with st.sidebar:
     selected_year = st.selectbox("Official catch season", list(range(2024, 2007, -1)))
     st.divider()
     st.subheader(f"{CURRENT_YEAR} permissioned catch reports")
-    st.caption("Upload only reports you own or have explicit permission to publish. No FishPal or Facebook import.")
+    st.caption("Upload only reports you own or have explicit permission to publish. "
+               "The separate Burnfoot FishPal test feed is not included in these CSV totals.")
     upload = st.file_uploader("Catch CSV", type=["csv"])
 
 reports, report_problems = clean_reports(upload, CURRENT_YEAR)
@@ -562,6 +660,34 @@ else:
         st.caption("This archive provides the selected season's annual river figures; the monthly breakdown above is only verified for 2024.")
 
 st.divider()
+if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
+    st.subheader(f"Burnfoot beat · {CURRENT_YEAR} FishPal catches (private test)")
+    st.caption("Burnfoot only, not the whole Border Esk. Figures are as posted on FishPal; "
+               "they are separate from EA annual totals and uploaded catch reports.")
+    try:
+        fishpal, retrieved_at = burnfoot_catches(CURRENT_YEAR)
+        current_month = dt.datetime.now(dt.timezone.utc).month
+        month_rows = [
+            {"Month": dt.date(CURRENT_YEAR, month, 1).strftime("%b"),
+             "Salmon": fishpal["salmon"][month],
+             "Sea trout": fishpal["sea_trout"][month]}
+            for month in range(1, current_month + 1)
+        ]
+        x, y, z = st.columns(3)
+        x.metric("Burnfoot salmon", sum(row["Salmon"] for row in month_rows))
+        y.metric("Burnfoot sea trout", sum(row["Sea trout"] for row in month_rows))
+        z.metric("Grilse", "Not separately reported")
+        fishpal_monthly = pd.DataFrame(month_rows)
+        st.bar_chart(fishpal_monthly.set_index("Month")[["Salmon", "Sea trout"]])
+        st.dataframe(fishpal_monthly, hide_index=True, use_container_width=True)
+        st.caption(f"[Source: Burnfoot on FishPal]({FISHPAL_BURNFOOT}#CatchesSection) · "
+                   f"page retrieved {retrieved_at}; refreshes at most hourly. "
+                   "The page gives monthly counts, not catch dates/times, methods, "
+                   "or historical weather/pressure. Grilse may be included in salmon.")
+    except Exception as exc:
+        st.warning("Burnfoot FishPal catch data are unavailable right now; no figures "
+                   "have been inferred from a previous snapshot. " + str(exc))
+    st.divider()
 st.subheader(f"Permissioned reports · 1 January–today {CURRENT_YEAR}")
 if len(reports):
     filtered = reports[reports["river"] == river].copy()
@@ -605,7 +731,8 @@ with st.expander("CSV format, provenance and commercial launch notes"):
             f"your-unique-id,{CURRENT_YEAR}-06-15,Border Esk,Burnfoot,1,1,0,18:30,Fly,1013,Cloudy,12,SW,https://your-own-permissioned-record.example", language="csv")
     st.write("One unique report_id per catch record; date must be YYYY-MM-DD. Salmon includes grilse."
              " The CSV is session-only and does not update a shared database. A zero means an explicitly reported zero, not missing data.")
-    st.write("Do not reuse FishPal/Facebook content without publication rights. Before charging subscribers,"
+    st.write("The Burnfoot FishPal feed is for private testing only; confirm FishPal access rights "
+             "or arrange a direct Burnfoot feed before public/commercial launch. Before charging subscribers,"
              " add server-side sign-in, verified payment entitlements, durable permissioned reports and a privacy policy."
              " This file intentionally contains no pretend paywall.")
     st.markdown(f"EA annual catch archive: [data.gov.uk]({EA_ARCHIVE}) (Open Government Licence). "
