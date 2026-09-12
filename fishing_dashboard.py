@@ -223,7 +223,7 @@ def current_weather(key: str, location: str) -> dict:
 def clean_reports(upload, selected_year: int) -> tuple[pd.DataFrame, list[str]]:
     columns = [
         "report_id", "date", "river", "beat", "salmon", "grilse", "sea_trout",
-        "time", "method", "pressure_hpa", "weather", "source_url",
+        "time", "method", "pressure_hpa", "weather", "wind_mph", "wind_dir", "source_url",
     ]
     empty = pd.DataFrame(columns=columns)
     if upload is None:
@@ -260,8 +260,18 @@ def clean_reports(upload, selected_year: int) -> tuple[pd.DataFrame, list[str]]:
             value = float(pressure) if pressure else None
             if value is not None and not 800 <= value <= 1100:
                 raise ValueError("pressure outside 800–1100 hPa")
+            wind_text = str(record["wind_mph"]).strip()
+            wind_speed = float(wind_text) if wind_text else None
+            if wind_speed is not None and not 0 <= wind_speed <= 200:
+                raise ValueError("wind speed outside 0–200 mph")
+            wind_direction = str(record["wind_dir"]).strip().upper()
+            compass = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                       "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"}
+            if wind_direction and wind_direction not in compass:
+                raise ValueError("wind direction must be a compass point (e.g. SW)")
             record.update(date=date, salmon=salmon, grilse=grilse,
-                          sea_trout=trout, pressure_hpa=value)
+                          sea_trout=trout, pressure_hpa=value,
+                          wind_mph=wind_speed, wind_dir=wind_direction)
             good.append(record)
             seen.add(record_id)
         except (ValueError, TypeError) as exc:
@@ -323,7 +333,7 @@ with st.sidebar:
     st.caption("Gauge is a selected monitoring station, not a measurement at the beat.")
 
 st.subheader("Current conditions")
-level_col, weather_col, pressure_col = st.columns(3)
+level_col, weather_col, pressure_col, wind_col = st.columns(4)
 if gauge_label != "No gauge selected":
     try:
         gauge = gauge_reading(station_lookup[gauge_label])
@@ -350,14 +360,25 @@ if weather_key:
         weather_col.caption(f"{location} · {weather['current']['temp_c']} °C · observed {weather['current']['last_updated']}")
         pressure_col.metric("Barometric pressure now", f"{weather['current']['pressure_mb']} hPa")
         pressure_col.caption("WeatherAPI · nearby location, not the beat")
+        wind_speed = weather["current"].get("wind_mph")
+        wind_direction = weather["current"].get("wind_dir")
+        wind_col.metric("Wind now", f"{wind_direction} · {wind_speed} mph" if wind_direction and wind_speed is not None else "Unavailable")
+        wind_col.caption(f"Direction and speed at {location}")
     except Exception as exc:
         weather_col.metric("Weather now", "Unavailable")
         pressure_col.metric("Barometric pressure now", "Unavailable")
+        wind_col.metric("Wind now", "Unavailable")
         weather_col.caption(f"Weather request failed: {exc}")
 else:
     weather_col.metric("Weather now", "API key needed")
     pressure_col.metric("Barometric pressure now", "API key needed")
+    wind_col.metric("Wind now", "API key needed")
     weather_col.caption("Set WEATHER_API_KEY in your deployment secrets.")
+if weather_key:
+    st.info("Weather conditions and forecasts are uncertain and may differ at your exact river or time. "
+            "They are for general information, not the sole basis for personal safety, boating, "
+            "emergency or other safety-critical decisions. Check official meteorological services "
+            "and relevant authorities when accuracy is critical.")
 
 st.divider()
 st.subheader(f"Official declared rod catches · {selected_year} · {river}")
@@ -384,7 +405,8 @@ else:
             {"Month": dt.date(2024, m, 1).strftime("%b"),
              "Salmon": monthly.get((official_name, m), {}).get("salmon"),
              "Sea trout": monthly.get((official_name, m), {}).get("sea_trout"),
-             "Pressure (hPa)": "Not in EA catches", "Weather": "Not in EA catches"}
+             "Pressure (hPa)": "Not in EA catches", "Weather": "Not in EA catches",
+             "Wind (mph)": "Not in EA catches", "Wind direction": "Not in EA catches"}
             for m in range(1, 13)
         ])
         unallocated = monthly.get((official_name, 0), {})
@@ -393,6 +415,7 @@ else:
                 "Month": "Unknown month", "Salmon": unallocated.get("salmon"),
                 "Sea trout": unallocated.get("sea_trout"),
                 "Pressure (hPa)": "Not in EA catches", "Weather": "Not in EA catches",
+                "Wind (mph)": "Not in EA catches", "Wind direction": "Not in EA catches",
             }
         st.bar_chart(history.set_index("Month")[["Salmon", "Sea trout"]])
         st.dataframe(history, hide_index=True, use_container_width=True)
@@ -416,6 +439,8 @@ if len(reports):
             subset = filtered[filtered["date"].map(lambda date: date.month == month)]
             pressures = subset["pressure_hpa"].dropna()
             weather_words = [str(word).strip() for word in subset["weather"] if str(word).strip()]
+            wind_speeds = subset["wind_mph"].dropna()
+            wind_directions = [str(direction) for direction in subset["wind_dir"] if str(direction)]
             grouped.append({
                 "Month": dt.date(CURRENT_YEAR, month, 1).strftime("%b"),
                 "Salmon": int(subset["salmon"].sum()),
@@ -423,32 +448,10 @@ if len(reports):
                 "Sea trout": int(subset["sea_trout"].sum()),
                 "Average pressure (hPa)": round(float(pressures.mean()), 1) if len(pressures) else None,
                 "Weather reported": ", ".join(f"{name} ({n})" for name, n in Counter(weather_words).most_common(3)) or "Not known",
+                "Average wind (mph)": round(float(wind_speeds.mean()), 1) if len(wind_speeds) else None,
+                "Wind directions reported": ", ".join(f"{name} ({n})" for name, n in Counter(wind_directions).most_common(3)) or "Not known",
             })
         by_month = pd.DataFrame(grouped)
         st.bar_chart(by_month.set_index("Month")[["Salmon", "Sea trout"]])
         st.dataframe(by_month, hide_index=True, use_container_width=True)
-        st.caption("Monthly pressure is the mean of reported pressures only; weather summarises reports with a condition. Missing observations remain unknown.")
-        st.dataframe(filtered[["date", "river", "beat", "salmon", "grilse", "sea_trout", "time", "method", "pressure_hpa", "weather", "source_url"]],
-                     hide_index=True, use_container_width=True)
-    else:
-        st.info("No permissioned reports for this river/beat in the uploaded CSV.")
-else:
-    st.info("No current-year catch reports loaded. Upload permissioned reports to enable beat totals, time/method details, and monthly pressure/weather alongside catches.")
-
-with st.expander("CSV format, provenance and commercial launch notes"):
-    st.code("report_id,date,river,beat,salmon,grilse,sea_trout,time,method,pressure_hpa,weather,source_url\n"
-            f"your-unique-id,{CURRENT_YEAR}-06-15,Border Esk,Burnfoot,1,1,0,18:30,Fly,1013,Cloudy,https://your-own-permissioned-record.example", language="csv")
-    st.write("One unique report_id per catch record; date must be YYYY-MM-DD. Salmon includes grilse."
-             " The CSV is session-only and does not update a shared database. A zero means an explicitly reported zero, not missing data.")
-    st.write("Do not reuse FishPal/Facebook content without publication rights. Before charging subscribers,"
-             " add server-side sign-in, verified payment entitlements, durable permissioned reports and a privacy policy."
-             " This file intentionally contains no pretend paywall.")
-    st.markdown(f"EA annual catch archive: [data.gov.uk]({EA_ARCHIVE}) (Open Government Licence). "
-                "© Environment Agency copyright and/or database right 2015. "
-                "[EA gauge API](https://environment.data.gov.uk/flood-monitoring/doc/reference) "
-                "(Open Government Licence). "
-                "Weather: [WeatherAPI.com](https://www.weatherapi.com/) "
-                "([terms](https://www.weatherapi.com/terms.aspx)); check your plan and attribution requirements.")
-
-st.caption("Contains Environment Agency data © Environment Agency copyright and/or database right 2015, "
-           "licensed under the Open Government Licence v3.0. Weather data © WeatherAPI.com when configured.")
+        st.caption("Monthly pressure and wind speed average only recorded values; weather and wind directions summarise reports with observations. Missin
