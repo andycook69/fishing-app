@@ -27,6 +27,7 @@ import os
 import re
 from collections import Counter
 from html.parser import HTMLParser
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -54,6 +55,9 @@ GOV_GAUGE_CSV = "https://check-for-flooding.service.gov.uk/station-csv/"
 WEATHER_API = "https://api.weatherapi.com/v1/current.json"
 WEATHER_HISTORY_API = "https://api.weatherapi.com/v1/history.json"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
+FISHPAL_BORDER_ESK_DAILY = "https://www.fishpal.com/scotland/borderesk/catches.html"
+UK_TIME = ZoneInfo("Europe/London")
+WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 # These RLOI IDs are checked against their individual government station pages.
 GOV_DEFAULT_GAUGES = {
     "Border Esk": ("River Esk at Canonbie", "5207"),
@@ -321,9 +325,10 @@ def parse_gauge_csv(content: str, days: list[dt.date]) -> dict[dt.date, float]:
                 continue
             timestamp = dt.datetime.fromisoformat(row["Timestamp (UTC)"].replace("Z", "+00:00"))
             height = float(row["Height (m)"])
-            if (timestamp.tzinfo and timestamp <= dt.datetime.now(dt.timezone.utc)
-                    and timestamp.date() in days and math.isfinite(height)):
-                by_day.setdefault(timestamp.date(), []).append(height)
+            local_date = timestamp.astimezone(UK_TIME).date() if timestamp.tzinfo else None
+            if (local_date in days and timestamp <= dt.datetime.now(dt.timezone.utc)
+                    and math.isfinite(height)):
+                by_day.setdefault(local_date, []).append(height)
         except (ValueError, KeyError, TypeError):
             continue
     return {day: round(sum(values) / len(values), 3) for day, values in by_day.items()}
@@ -350,15 +355,17 @@ def gauge_daily_levels(station_id: str, rloi_id: str, days: tuple[dt.date, ...])
         return {}
     base = "https://environment.data.gov.uk/flood-monitoring/id/measures/"
     result = get_json(base + identifier + "/readings?" + urlencode({
-        "startdate": days[0].isoformat(), "enddate": days[-1].isoformat(), "_limit": 10000,
+        "startdate": (days[0] - dt.timedelta(days=1)).isoformat(),
+        "enddate": days[-1].isoformat(), "_limit": 10000,
     }), timeout=22).get("items", [])
     by_day = {}
     for reading in result:
         try:
             timestamp = dt.datetime.fromisoformat(reading["dateTime"].replace("Z", "+00:00"))
             level = float(reading["value"])
-            if timestamp.date() in days and math.isfinite(level):
-                by_day.setdefault(timestamp.date(), []).append(level)
+            local_date = timestamp.astimezone(UK_TIME).date() if timestamp.tzinfo else None
+            if local_date in days and math.isfinite(level):
+                by_day.setdefault(local_date, []).append(level)
         except (ValueError, TypeError, KeyError):
             continue
     return {day: round(sum(values) / len(values), 3) for day, values in by_day.items()}
@@ -483,6 +490,84 @@ def burnfoot_catches(year: int) -> tuple[dict, str]:
     fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     html = get_bytes(FISHPAL_BURNFOOT, timeout=20).decode("utf-8", errors="replace")
     return parse_burnfoot_catches(html, year), fetched_at
+
+
+class _WeekdayCatchParser(HTMLParser):
+    """Pick Burnfoot's two species columns, excluding river-wide subtotals."""
+
+    weekdays = set(WEEKDAY_NAMES)
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.current_week = False
+        self.day = None
+        self.row = None
+        self.cell = None
+        self.counts = {}
+        self.seen_totals = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.row = []
+        elif tag in {"td", "th"} and self.row is not None:
+            self.cell = []
+
+    def handle_data(self, data):
+        text = " ".join(data.split()).lower()
+        if "for the current week" in text:
+            self.current_week = True
+        if "week so far" in text or "last week" in text:
+            self.current_week = False
+        if self.current_week and text in self.weekdays:
+            self.day = text
+        if self.cell is not None:
+            self.cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in {"td", "th"} and self.cell is not None:
+            self.row.append(" ".join(" ".join(self.cell).split()))
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            if self.current_week and self.row:
+                for value in self.row:
+                    if value.lower() in self.weekdays:
+                        self.day = value.lower()
+                if self.day and len(self.row) >= 2:
+                    for column, species in enumerate(("salmon", "sea_trout")):
+                        value = self.row[column]
+                        found = re.search(r"\bBurnfoot\s*[-–:]\s*([0-9,]+)\b", value, re.I)
+                        if found:
+                            day_counts = self.counts.setdefault(self.day, {})
+                            # The beat should occur only once per day and species.
+                            if species in day_counts:
+                                raise ValueError("Duplicate Burnfoot daily catch entry")
+                            day_counts[species] = int(found.group(1).replace(",", ""))
+                        if re.search(r"\bTotal\s*:\s*[0-9,]+", value, re.I):
+                            self.seen_totals.setdefault(self.day, set()).add(species)
+            self.row = None
+
+
+def parse_burnfoot_weekdays(html: str, today: dt.date) -> dict[dt.date, dict]:
+    parser = _WeekdayCatchParser()
+    parser.feed(html)
+    if not parser.seen_totals:
+        raise ValueError("FishPal weekly catch table could not be read")
+    week_start = today - dt.timedelta(days=today.weekday())
+    result = {}
+    for name, totals in parser.seen_totals.items():
+        day = week_start + dt.timedelta(days=WEEKDAY_NAMES.index(name))
+        if day > today:
+            continue
+        result[day] = {species: parser.counts.get(name, {}).get(species, 0)
+                       for species in totals}
+    return result
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def burnfoot_daily_catches(today: dt.date) -> tuple[dict, str]:
+    html = get_bytes(FISHPAL_BORDER_ESK_DAILY, timeout=20).decode("utf-8", errors="replace")
+    fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return parse_burnfoot_weekdays(html, today), fetched_at
 
 
 def clean_reports(upload, selected_year: int) -> tuple[pd.DataFrame, list[str]]:
@@ -702,7 +787,7 @@ if weather_key:
 
 st.divider()
 if view == "Last 7 days":
-    today = dt.datetime.now(dt.timezone.utc).date()
+    today = dt.datetime.now(UK_TIME).date()
     days = tuple(today - dt.timedelta(days=offset) for offset in range(6, -1, -1))
     st.subheader(f"Past 7 days · {river}" + (f" · {beat}" if beat != "All beats" else ""))
     levels = {}
@@ -719,6 +804,8 @@ if view == "Last 7 days":
         conditions[today] = "Now: " + weather["current"]["condition"]["text"]
 
     recent_counts = {}
+    fishpal_daily = {}
+    fishpal_retrieved = ""
     if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
         try:
             fishpal_week, retrieved_at = burnfoot_catches(CURRENT_YEAR)
@@ -731,15 +818,26 @@ if view == "Last 7 days":
                            f"page retrieved {retrieved_at}.")
         except Exception:
             st.warning("Burnfoot's seven-day FishPal total is temporarily unavailable.")
+        try:
+            fishpal_daily, fishpal_retrieved = burnfoot_daily_catches(today)
+        except Exception:
+            st.warning("FishPal's weekday catches are temporarily unavailable; "
+                       "only dated CSV reports can appear as daily bars.")
 
     daily_uploads = reports[reports["river"] == river].copy() if len(reports) else reports.copy()
     if beat != "All beats" and len(daily_uploads):
         daily_uploads = daily_uploads[daily_uploads["beat"] == beat]
+    use_fishpal_daily = bool(fishpal_daily)
+    catch_source = "FishPal · Burnfoot only" if use_fishpal_daily else "Uploaded dated reports"
     rows = []
     for day in days:
         matching = daily_uploads[daily_uploads["date"] == day] if len(daily_uploads) else daily_uploads
+        daily = (fishpal_daily.get(day, {}) if use_fishpal_daily else
+                 {"salmon": int(matching["salmon"].sum()),
+                  "sea_trout": int(matching["sea_trout"].sum())} if len(daily_uploads) else {})
         rows.append({"Date": day, "Water level (m)": levels.get(day),
-                     "CSV-reported salmon": int(matching["salmon"].sum()) if len(daily_uploads) else None,
+                     "Reported salmon": daily.get("salmon"),
+                     "Reported sea trout": daily.get("sea_trout"),
                      "Weather": conditions.get(day, "Not available")})
     seven = pd.DataFrame(rows)
     plots = []
@@ -750,11 +848,12 @@ if view == "Last 7 days":
             tooltip=[alt.Tooltip("Date:T", format="%a %d %b"),
                      alt.Tooltip("Water level (m):Q", format=".3f")]
         ).properties(height=170, title="Daily mean water level at selected gauge"))
-    if len(daily_uploads):
+    if seven["Reported salmon"].notna().any():
         plots.append(base.mark_bar(color="#e77d30", size=25).encode(
-            y=alt.Y("CSV-reported salmon:Q", title="Salmon in uploaded reports"),
-            tooltip=[alt.Tooltip("Date:T", format="%a %d %b"), "CSV-reported salmon:Q"]
-        ).properties(height=140, title="Dated catch reports (not the FishPal total)"))
+            y=alt.Y("Reported salmon:Q", title="Reported salmon"),
+            tooltip=[alt.Tooltip("Date:T", format="%a %d %b"), "Reported salmon:Q",
+                     "Reported sea trout:Q", "Water level (m):Q", "Weather:N"]
+        ).properties(height=140, title="Dated catches · " + catch_source))
     weather_strip = base.mark_rect().encode(
         y=alt.Y("Weather:N", title="Weather", axis=alt.Axis(labelLimit=220)),
         color=alt.Color("Weather:N", legend=None, scale=alt.Scale(scheme="tableau20")),
@@ -763,14 +862,20 @@ if view == "Last 7 days":
     plots.append(weather_strip)
     st.altair_chart(alt.vconcat(*plots).resolve_scale(x="shared"), use_container_width=True)
     st.dataframe(seven, hide_index=True, use_container_width=True)
-    st.caption("Gauge: observed daily mean in UTC, not a reading at the beat; missing days stay blank. "
+    st.caption("Gauge: observed daily mean grouped by UK calendar date, not a reading at the beat; "
+               "catch and gauge data are aligned by date, not by exact catch time. Missing days stay blank. "
                "Weather: daily historical condition for prior days; today is the current observation, "
                "not a full-day summary. No weather is assigned to individual catches.")
     if not levels:
         st.info("No daily water levels were available for this gauge. Check the gauge selection or its government feed.")
-    if not len(daily_uploads):
-        st.info("FishPal publishes a seven-day Burnfoot total, not daily catch dates. "
-                "Daily salmon bars require dated reports in the catch CSV; the total cannot be split reliably between days.")
+    if use_fishpal_daily:
+        st.caption(f"[Daily Burnfoot catches on FishPal]({FISHPAL_BORDER_ESK_DAILY}) · "
+                   f"page retrieved {fishpal_retrieved}. The weekday table covers the current week only; "
+                   "days from last week are unknown without a saved dated catch log. "
+                   "These bars are Burnfoot-only, even when 'All beats' is selected, and are not added to CSV counts.")
+    elif not len(daily_uploads):
+        st.info("No dated catch records available for this river/beat. "
+                "FishPal's seven-day total cannot be split into daily figures.")
     if not history_ok:
         st.caption("Past-day weather needs History API access on your WeatherAPI key; "
                    "unavailable days are not filled with today's weather.")
