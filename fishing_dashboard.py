@@ -7,6 +7,9 @@ GitHub: save this file as app.py and add a requirements.txt containing:
     altair>=5,<7
 
 Run: streamlit run app.py
+Place the supplied illustrative salmon_river_banner.png beside app.py for the
+banner. If you later have an authorised actual Burnfoot photograph, put it at
+burnfoot_header.jpg beside app.py to use it on the Border Esk view instead.
 Optional live weather: set WEATHER_API_KEY in Streamlit deployment secrets
 or as a server-side environment variable. Never put the key in GitHub.
 Optional dated beat catches: put a permissioned catch_reports.csv alongside
@@ -23,12 +26,15 @@ This app has no subscriber authentication or payment integration.
 from __future__ import annotations
 
 import datetime as dt
+import base64
 import csv
 import io
 import math
 import os
 import re
 from collections import Counter
+from html import escape
+from pathlib import Path
 from statistics import median
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
@@ -70,9 +76,22 @@ st.markdown("""<style>
     .river-kicker { color: var(--river-blue); font-size: .78rem; font-weight: 750;
         letter-spacing: .12em; text-transform: uppercase; margin: 0 0 .4rem; }
     .river-note { color: #567183; margin: -.4rem 0 1.25rem; }
+    .river-hero {
+        background-color: #244e61; background-size: cover; background-position: center 50%;
+        min-height: 250px; border-radius: 20px; padding: 2rem 2.4rem;
+        display: flex; flex-direction: column; justify-content: flex-end;
+        box-shadow: 0 14px 30px rgba(18, 54, 72, .14);
+        margin-bottom: 1rem;
+    }
+    .river-hero h1 { color: #fff !important; margin: .25rem 0 .45rem;
+        text-shadow: 0 2px 12px rgba(0, 0, 0, .4); }
+    .river-hero .river-kicker { color: #e5f8fa; text-shadow: 0 1px 6px #122d3b; }
+    .river-hero p { color: #f0f9fb; margin: 0; text-shadow: 0 1px 6px #122d3b; }
+    .river-hero small { color: #f0f9fb; margin-top: .8rem; font-size: .74rem; }
     @media (max-width: 700px) {
         [data-testid="stMainBlockContainer"] { padding-top: 4rem; }
         [data-testid="stMetric"] { min-height: 95px; padding: .75rem; }
+        .river-hero { min-height: 210px; padding: 1.4rem; }
     }
 </style>""", unsafe_allow_html=True)
 
@@ -854,10 +873,6 @@ def saved_catch_upload():
     return data
 
 
-st.markdown('<p class="river-kicker">River & catch dashboard</p>', unsafe_allow_html=True)
-st.title("Northern salmon & sea trout")
-st.caption("Current river conditions and dated catches · official catch history on a separate page")
-
 with st.sidebar:
     st.header("Explore")
     view = st.radio("View", ["Last 7 days", "Catch history and reports"], horizontal=True)
@@ -902,6 +917,43 @@ with beat_slot:
         with st.expander("About Border Esk beats"):
             st.caption("[Browse FishPal's Border Esk listings](https://www.fishpal.com/search/in/Border%20Esk) "
                        "for reference; they are not imported into this app.")
+
+burnfoot_photo = Path(__file__).with_name("burnfoot_header.jpg")
+illustrative_banner = Path(__file__).with_name("salmon_river_banner.png")
+use_burnfoot_photo = (river == "Border Esk" and beat in {"All beats", "Burnfoot"}
+                      and burnfoot_photo.is_file())
+hero_path = burnfoot_photo if use_burnfoot_photo else illustrative_banner
+if hero_path.is_file():
+    try:
+        # Only embed local project assets; never hotlink a third-party fishery image.
+        if hero_path.stat().st_size > 6_000_000:
+            raise ValueError(f"{hero_path.name} is larger than 6 MB")
+        encoded_photo = base64.b64encode(hero_path.read_bytes()).decode("ascii")
+        mime = "image/jpeg" if use_burnfoot_photo else "image/png"
+        banner = (
+            "linear-gradient(90deg, rgba(10,35,51,.88), "
+            "rgba(10,35,51,.49) 64%, rgba(10,35,51,.27)), "
+            f"url('data:{mime};base64,{encoded_photo}')"
+        )
+        description = ("Photograph: Burnfoot beat, Border Esk" if use_burnfoot_photo
+                       else "Illustrative river scene · not a photograph of this beat")
+        st.markdown(
+            f'<section class="river-hero" style="background-image:{banner}">'
+            '<span class="river-kicker">River & catch dashboard</span>'
+            '<h1>Northern salmon &amp; sea trout</h1>'
+            '<p>Current river conditions and dated catches</p>'
+            f'<small>{description}</small>'
+            '</section>', unsafe_allow_html=True,
+        )
+    except (OSError, ValueError) as exc:
+        st.warning(f"Could not load the header image: {escape(str(exc))}")
+        st.markdown('<p class="river-kicker">River & catch dashboard</p>', unsafe_allow_html=True)
+        st.title("Northern salmon & sea trout")
+else:
+    st.markdown('<p class="river-kicker">River & catch dashboard</p>', unsafe_allow_html=True)
+    st.title("Northern salmon & sea trout")
+    st.caption("Current river conditions and dated catches · official catch history on a separate page")
+
 with st.sidebar:
     st.divider()
     st.caption("Nearby conditions and river gauges are approximate, not readings at the beat.")
