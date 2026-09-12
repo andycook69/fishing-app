@@ -887,14 +887,10 @@ if view == "Last 7 days":
     fishpal_retrieved = ""
     if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
         try:
-            fishpal_week, retrieved_at = burnfoot_catches(CURRENT_YEAR)
+            fishpal_week, _ = burnfoot_catches(CURRENT_YEAR)
             recent_counts = fishpal_week.get("last_seven", {})
             if "salmon" in recent_counts:
                 st.metric("Burnfoot salmon · last 7 days (FishPal)", recent_counts["salmon"])
-            if "sea_trout" in recent_counts:
-                st.caption(f"Burnfoot sea trout in the same period: {recent_counts['sea_trout']}. "
-                           f"[FishPal source]({FISHPAL_BURNFOOT}#CatchesSection), "
-                           f"page retrieved {retrieved_at}.")
         except Exception:
             st.warning("Burnfoot's seven-day FishPal total is temporarily unavailable.")
         try:
