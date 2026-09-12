@@ -18,6 +18,7 @@ This app has no subscriber authentication or payment integration.
 from __future__ import annotations
 
 import datetime as dt
+import csv
 import io
 import math
 import os
@@ -45,7 +46,16 @@ EA_WORKBOOK = (
     "Supplementary_data_tables_2024.xlsx"
 )
 GAUGE_API = "https://environment.data.gov.uk/flood-monitoring/id/stations"
+GOV_GAUGE_CSV = "https://check-for-flooding.service.gov.uk/station-csv/"
 WEATHER_API = "https://api.weatherapi.com/v1/current.json"
+# These RLOI IDs are checked against their individual government station pages.
+GOV_DEFAULT_GAUGES = {
+    "Border Esk": ("River Esk at Canonbie", "5207"),
+    "Yorkshire Esk": ("River Esk at Briggswath", "8233"),
+    "Cumbrian Esk": ("River Esk at Cropple How", "5037"),
+    "Tyne": ("River Tyne at Hexham", "9006"),
+    "Tees": ("River Tees at Barnard Castle", "8014"),
+}
 RIVERS = {
     "Border Esk": ("Esk Border", "Canonbie, UK"),
     "Yorkshire Esk": ("Esk Yorkshire", "Whitby, UK"),
@@ -207,8 +217,45 @@ def matching_gauges(stations: list[dict], river: str,
 
 
 @st.cache_data(ttl=15 * 60, show_spinner=False)
-def gauge_reading(station_id: str) -> dict:
-    # Station IDs come only from the government response or a fixed value below.
+def government_station_reading(rloi_id: str) -> dict:
+    # RLOI IDs belong to the public Check for Flooding pages, not necessarily
+    # to the separate EA flood-monitoring station endpoint.
+    if not rloi_id.isdigit():
+        raise ValueError("Invalid government gauge identifier")
+    content = get_bytes(GOV_GAUGE_CSV + rloi_id, timeout=18).decode("utf-8-sig")
+    readings = []
+    for row in csv.DictReader(io.StringIO(content)):
+        try:
+            if row.get("Type(observed/forecast)", "").strip().lower() == "forecast":
+                continue
+            timestamp = dt.datetime.fromisoformat(row["Timestamp (UTC)"].replace("Z", "+00:00"))
+            height = float(row["Height (m)"])
+            if (math.isfinite(height) and timestamp.tzinfo is not None and
+                    timestamp <= dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)):
+                readings.append((timestamp, height))
+        except (ValueError, KeyError, TypeError):
+            continue
+    if not readings:
+        raise ValueError("No valid recent level in government station CSV")
+    timestamp, height = max(readings, key=lambda reading: reading[0])
+    known_name = next((name for name, station_id in GOV_DEFAULT_GAUGES.values()
+                       if station_id == rloi_id), "Government station " + rloi_id)
+    return {"station": known_name,
+            "river": "",
+            "value": height, "date": timestamp.isoformat(), "unit": "m",
+            "measure": "Stage", "source": GOV_GAUGE_CSV + rloi_id}
+
+
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def gauge_reading(station_id: str, rloi_id: str = "") -> dict:
+    # Prefer the official public gauge CSV when an RLOI page ID is known.
+    if rloi_id:
+        try:
+            return government_station_reading(rloi_id)
+        except Exception:
+            if not station_id:
+                raise
+    # Station IDs below come only from the EA monitoring-stations response.
     station = get_json(GAUGE_API + "/" + station_id).get("items", {})
     if isinstance(station, list):
         station = station[0] if station else {}
@@ -374,7 +421,7 @@ if weather_key:
 
 nearby = []
 gauge_error = None
-if weather:
+if weather and river not in GOV_DEFAULT_GAUGES:
     try:
         nearby = matching_gauges(
             gauges_near(float(weather["location"]["lat"]), float(weather["location"]["lon"])),
@@ -383,30 +430,36 @@ if weather:
     except Exception as exc:
         gauge_error = str(exc)
 try:
-    need_search = search_term.strip() and (not nearby or search_term.strip() != default_gauge_search)
+    need_search = search_term.strip() and (
+        (not nearby and river not in GOV_DEFAULT_GAUGES)
+        or search_term.strip() != default_gauge_search
+    )
     stations = search_gauges(search_term.strip()) if need_search else []
 except Exception as exc:
     stations = []
     if not nearby:
         gauge_error = str(exc)
 station_lookup = {}
-if river == "Border Esk":
-    station_lookup["Canonbie (Border Esk) [5207]"] = "5207"
+if river in GOV_DEFAULT_GAUGES:
+    name, rloi_id = GOV_DEFAULT_GAUGES[river]
+    station_lookup[f"{name} [{rloi_id}]"] = ("", rloi_id)
 for station in nearby:
     station_id = str(station.get("notation", ""))
     if station_id and all(char.isalnum() or char in "_-" for char in station_id):
         label = f"Nearby: {station.get('label', station_id)} · {station.get('riverName', 'river unspecified')} [{station_id}]"
-        station_lookup[label] = station_id
+        rloi_id = str(station.get("RLOIid") or "")
+        station_lookup[label] = (station_id, rloi_id if rloi_id.isdigit() else "")
 automatic_match = bool(station_lookup)
 for station in stations:
     station_id = str(station.get("notation", ""))
     if station_id and all(char.isalnum() or char in "_-" for char in station_id):
         label = f"Search: {station.get('label', station_id)} · {station.get('riverName', 'river unspecified')} [{station_id}]"
-        station_lookup[label] = station_id
+        rloi_id = str(station.get("RLOIid") or "")
+        station_lookup[label] = (station_id, rloi_id if rloi_id.isdigit() else "")
 with st.sidebar:
     gauge_label = st.selectbox("River-level gauge", ["No gauge selected", *station_lookup],
                                index=1 if automatic_match else 0,
-                               key=f"selected_gauge_{river}_{location.strip().lower()}")
+                               key=f"selected_gauge_v3_{river}_{location.strip().lower()}")
     st.caption("Automatically chooses the nearest matching river gauge when available. "
                "Check the station name; its reading is not measured at the beat.")
     if gauge_error:
@@ -418,7 +471,7 @@ st.subheader("Current conditions")
 level_col, weather_col, pressure_col, wind_col = st.columns(4)
 if gauge_label != "No gauge selected":
     try:
-        gauge = gauge_reading(station_lookup[gauge_label])
+        gauge = gauge_reading(*station_lookup[gauge_label])
         if "value" in gauge:
             timestamp = dt.datetime.fromisoformat(str(gauge["date"]).replace("Z", "+00:00"))
             if timestamp.tzinfo is None:
