@@ -914,14 +914,21 @@ if view == "Last 7 days":
         daily = (fishpal_daily.get(day, {}) if use_fishpal_daily else
                  {"salmon": int(matching["salmon"].sum()),
                   "sea_trout": int(matching["sea_trout"].sum())} if len(daily_uploads) else {})
-        rows.append({"Date": day, "Water level (m)": levels.get(day),
+        rows.append({"Date": day, "Day": day.strftime("%a %d %b"),
+                     "Water level (m)": levels.get(day),
                      "Reported salmon": daily.get("salmon"),
                      "Reported sea trout": daily.get("sea_trout"),
                      "Weather": conditions.get(day, "Not available"),
                      "Weather icon": weather_icon(conditions.get(day, "Not available"))})
     seven = pd.DataFrame(rows)
     plots = []
-    base = alt.Chart(seven).encode(x=alt.X("Date:T", title=None, axis=alt.Axis(format="%a %d %b")))
+    # A categorical day axis gives exactly seven positions; a temporal axis
+    # inserted several ticks per day and repeated the same formatted date.
+    day_labels = [day.strftime("%a %d %b") for day in days]
+    base = alt.Chart(seven).encode(x=alt.X(
+        "Day:N", sort=day_labels, title=None,
+        axis=alt.Axis(labelAngle=0, labelOverlap=False),
+    ))
     if levels:
         plots.append(base.mark_line(point=True, color="#0873b9").encode(
             y=alt.Y("Water level (m):Q", scale=alt.Scale(zero=False)),
@@ -939,10 +946,12 @@ if view == "Last 7 days":
         text=alt.Text("Weather icon:N"),
         tooltip=[alt.Tooltip("Date:T", format="%a %d %b"),
                  alt.Tooltip("Weather:N", title="Condition")]
-    ).properties(height=64, title="Weather by day · nearby location (— = unavailable)")
+    ).properties(height=64, title="Weather by day · nearby location")
     plots.append(weather_strip)
     st.altair_chart(alt.vconcat(*plots).resolve_scale(x="shared"), use_container_width=True)
-    st.dataframe(seven, hide_index=True, use_container_width=True)
+    st.dataframe(seven.drop(columns="Day"), hide_index=True, use_container_width=True)
+    st.caption("Hover over a weather icon for the exact condition. — means weather data "
+               "were unavailable for that day; today’s icon is the current observation.")
     st.caption(f"Gauge: {level_source}; observed daily mean grouped by UK calendar date, "
                "not a reading at the beat. This is a gauge level, not FishPal's height above summer lows. "
                "catch and gauge data are aligned by date, not by exact catch time. Missing days stay blank. "
