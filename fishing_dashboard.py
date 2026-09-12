@@ -52,6 +52,8 @@ EA_WORKBOOK = (
 )
 GAUGE_API = "https://environment.data.gov.uk/flood-monitoring/id/stations"
 GOV_GAUGE_CSV = "https://check-for-flooding.service.gov.uk/station-csv/"
+SEPA_CANONBIE_API = "https://timeseries.sepa.org.uk/KiWIS/KiWIS"
+SEPA_CANONBIE_STATION = "https://waterlevels.sepa.org.uk/Station/133148"
 WEATHER_API = "https://api.weatherapi.com/v1/current.json"
 WEATHER_HISTORY_API = "https://api.weatherapi.com/v1/history.json"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
@@ -334,6 +336,49 @@ def parse_gauge_csv(content: str, days: list[dt.date]) -> dict[dt.date, float]:
     return {day: round(sum(values) / len(values), 3) for day, values in by_day.items()}
 
 
+def parse_sepa_levels(content: str, days: tuple[dt.date, ...]) -> dict[dt.date, float]:
+    """SEPA KiWIS CSV has # metadata lines, then timestamp,value data rows."""
+    by_day = {}
+    now = dt.datetime.now(dt.timezone.utc)
+    for row in csv.reader(io.StringIO(content)):
+        if not row or row[0].lstrip().startswith("#"):
+            continue
+        if len(row) < 2 and ";" in row[0]:
+            row = next(csv.reader([row[0]], delimiter=";"))
+        if len(row) < 2:
+            continue
+        try:
+            timestamp = dt.datetime.fromisoformat(row[0].strip().strip('"'))
+            height = float(row[1].strip().strip('"'))
+            if timestamp.tzinfo is None:
+                # Never guess an offset on historical readings.
+                continue
+            day = timestamp.astimezone(UK_TIME).date()
+            if day in days and timestamp <= now and math.isfinite(height):
+                by_day.setdefault(day, []).append(height)
+        except (ValueError, TypeError):
+            continue
+    return {day: round(sum(values) / len(values), 3) for day, values in by_day.items()}
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def sepa_canonbie_daily_levels(days: tuple[dt.date, ...]) -> dict:
+    # Station/path comes from SEPA's own Canonbie station page (1-month download).
+    query = {
+        "service": "kisters", "type": "queryServices", "datasource": "0",
+        "request": "getTimeseriesValues", "ts_path": "1/133148/SG/15m.Cmd",
+        "period": "P8D", "metadata": "true", "returnfields": "Timestamp,Value",
+        "dateformat": "yyyy-MM-dd'T'HH:mm:ssXXX", "format": "csv", "csvdiv": ",",
+    }
+    content = get_bytes(SEPA_CANONBIE_API + "?" + urlencode(query), timeout=20).decode(
+        "utf-8-sig", errors="replace"
+    )
+    daily = parse_sepa_levels(content, days)
+    if not daily:
+        raise ValueError("SEPA Canonbie readings were not available in the requested period")
+    return daily
+
+
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def gauge_daily_levels(station_id: str, rloi_id: str, days: tuple[dt.date, ...]) -> dict:
     if rloi_id:
@@ -387,6 +432,30 @@ def weather_daily_history(key: str, location: str, days: tuple[dt.date, ...]) ->
             # A missing history subscription should never expose the API key in an error.
             return result, False
     return result, True
+
+
+def weather_icon(condition: str) -> str:
+    """Use a simple symbol for a WeatherAPI description; never guess missing days."""
+    words = str(condition or "").lower()
+    if not words or words == "not available":
+        return "—"
+    if any(term in words for term in ("thunder", "lightning")):
+        return "⛈️"
+    if any(term in words for term in ("snow", "blizzard", "ice", "icy")):
+        return "🌨️"
+    if any(term in words for term in ("sleet", "freezing rain")):
+        return "🌧️"
+    if any(term in words for term in ("rain", "drizzle", "shower")):
+        return "🌧️"
+    if any(term in words for term in ("fog", "mist", "haze")):
+        return "🌫️"
+    if "partly cloudy" in words:
+        return "⛅"
+    if any(term in words for term in ("overcast", "cloud")):
+        return "☁️"
+    if any(term in words for term in ("sun", "clear")):
+        return "☀️"
+    return "🌤️"
 
 
 class _CatchTableParser(HTMLParser):
@@ -791,9 +860,19 @@ if view == "Last 7 days":
     days = tuple(today - dt.timedelta(days=offset) for offset in range(6, -1, -1))
     st.subheader(f"Past 7 days · {river}" + (f" · {beat}" if beat != "All beats" else ""))
     levels = {}
+    level_source = "government gauge"
     if gauge_label != "No gauge selected":
         try:
-            levels = gauge_daily_levels(*station_lookup[gauge_label], days)
+            station_id, rloi_id = station_lookup[gauge_label]
+            if rloi_id == "5207":
+                try:
+                    levels = sepa_canonbie_daily_levels(days)
+                    level_source = "SEPA Canonbie (one source across the seven-day graph)"
+                except Exception:
+                    levels = gauge_daily_levels(station_id, rloi_id, days)
+                    level_source = "GOV.UK Canonbie (five-day CSV fallback)"
+            else:
+                levels = gauge_daily_levels(station_id, rloi_id, days)
         except Exception:
             st.caption("The selected government gauge has no accessible seven-day history right now.")
     conditions = {}
@@ -838,7 +917,8 @@ if view == "Last 7 days":
         rows.append({"Date": day, "Water level (m)": levels.get(day),
                      "Reported salmon": daily.get("salmon"),
                      "Reported sea trout": daily.get("sea_trout"),
-                     "Weather": conditions.get(day, "Not available")})
+                     "Weather": conditions.get(day, "Not available"),
+                     "Weather icon": weather_icon(conditions.get(day, "Not available"))})
     seven = pd.DataFrame(rows)
     plots = []
     base = alt.Chart(seven).encode(x=alt.X("Date:T", title=None, axis=alt.Axis(format="%a %d %b")))
@@ -854,18 +934,26 @@ if view == "Last 7 days":
             tooltip=[alt.Tooltip("Date:T", format="%a %d %b"), "Reported salmon:Q",
                      "Reported sea trout:Q", "Water level (m):Q", "Weather:N"]
         ).properties(height=140, title="Dated catches · " + catch_source))
-    weather_strip = base.mark_rect().encode(
-        y=alt.Y("Weather:N", title="Weather", axis=alt.Axis(labelLimit=220)),
-        color=alt.Color("Weather:N", legend=None, scale=alt.Scale(scheme="tableau20")),
-        tooltip=[alt.Tooltip("Date:T", format="%a %d %b"), "Weather:N"]
-    ).properties(height=150, title="Weather by day · nearby location")
+    weather_strip = base.mark_text(fontSize=28, baseline="middle").encode(
+        y=alt.value(32),
+        text=alt.Text("Weather icon:N"),
+        tooltip=[alt.Tooltip("Date:T", format="%a %d %b"),
+                 alt.Tooltip("Weather:N", title="Condition")]
+    ).properties(height=64, title="Weather by day · nearby location (— = unavailable)")
     plots.append(weather_strip)
     st.altair_chart(alt.vconcat(*plots).resolve_scale(x="shared"), use_container_width=True)
     st.dataframe(seven, hide_index=True, use_container_width=True)
-    st.caption("Gauge: observed daily mean grouped by UK calendar date, not a reading at the beat; "
+    st.caption(f"Gauge: {level_source}; observed daily mean grouped by UK calendar date, "
+               "not a reading at the beat. This is a gauge level, not FishPal's height above summer lows. "
                "catch and gauge data are aligned by date, not by exact catch time. Missing days stay blank. "
                "Weather: daily historical condition for prior days; today is the current observation, "
                "not a full-day summary. No weather is assigned to individual catches.")
+    if level_source.startswith("SEPA"):
+        st.caption(f"[SEPA Canonbie station and data]({SEPA_CANONBIE_STATION}); "
+                   "[GOV.UK current Canonbie gauge](https://check-for-flooding.service.gov.uk/station/5207). "
+                   "The current-level tile above comes from GOV.UK; the seven-day line uses SEPA. "
+                   "Contains SEPA data © Scottish Environment Protection Agency, "
+                   "licensed under the Open Government Licence v3.0.")
     if not levels:
         st.info("No daily water levels were available for this gauge. Check the gauge selection or its government feed.")
     if use_fishpal_daily:
@@ -999,6 +1087,10 @@ with st.expander("CSV format, provenance and commercial launch notes"):
              "or arrange a direct Burnfoot feed before public/commercial launch. Before charging subscribers,"
              " add server-side sign-in, verified payment entitlements, durable permissioned reports and a privacy policy."
              " This file intentionally contains no pretend paywall.")
+    st.write("SEPA provides Canonbie time-series data under the Open Government Licence; "
+             "SEPA recommends registering API access if including the data in a web product. "
+             "Anonymous access can be rate-limited. The seven-day graph falls back to the "
+             "GOV.UK five-day CSV if the SEPA feed is unavailable.")
     st.markdown(f"EA annual catch archive: [data.gov.uk]({EA_ARCHIVE}) (Open Government Licence). "
                 "© Environment Agency copyright and/or database right 2015. "
                 "[EA gauge API](https://environment.data.gov.uk/flood-monitoring/doc/reference) "
