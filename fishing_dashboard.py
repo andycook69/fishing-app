@@ -454,4 +454,28 @@ if len(reports):
         by_month = pd.DataFrame(grouped)
         st.bar_chart(by_month.set_index("Month")[["Salmon", "Sea trout"]])
         st.dataframe(by_month, hide_index=True, use_container_width=True)
-        st.caption("Monthly pressure and wind speed average only recorded values; weather and wind directions summarise reports with observations. Missin
+        st.caption("Monthly pressure and wind speed average only recorded values; weather and wind directions summarise reports with observations. Missing data remain unknown.")
+        st.dataframe(filtered[["date", "river", "beat", "salmon", "grilse", "sea_trout", "time", "method", "pressure_hpa", "weather", "wind_mph", "wind_dir", "source_url"]],
+                     hide_index=True, use_container_width=True)
+    else:
+        st.info("No permissioned reports for this river/beat in the uploaded CSV.")
+else:
+    st.info("No current-year catch reports loaded. Upload permissioned reports to enable beat totals, time/method details, and monthly pressure/weather/wind alongside catches.")
+
+with st.expander("CSV format, provenance and commercial launch notes"):
+    st.code("report_id,date,river,beat,salmon,grilse,sea_trout,time,method,pressure_hpa,weather,wind_mph,wind_dir,source_url\n"
+            f"your-unique-id,{CURRENT_YEAR}-06-15,Border Esk,Burnfoot,1,1,0,18:30,Fly,1013,Cloudy,12,SW,https://your-own-permissioned-record.example", language="csv")
+    st.write("One unique report_id per catch record; date must be YYYY-MM-DD. Salmon includes grilse."
+             " The CSV is session-only and does not update a shared database. A zero means an explicitly reported zero, not missing data.")
+    st.write("Do not reuse FishPal/Facebook content without publication rights. Before charging subscribers,"
+             " add server-side sign-in, verified payment entitlements, durable permissioned reports and a privacy policy."
+             " This file intentionally contains no pretend paywall.")
+    st.markdown(f"EA annual catch archive: [data.gov.uk]({EA_ARCHIVE}) (Open Government Licence). "
+                "© Environment Agency copyright and/or database right 2015. "
+                "[EA gauge API](https://environment.data.gov.uk/flood-monitoring/doc/reference) "
+                "(Open Government Licence). "
+                "Weather: [WeatherAPI.com](https://www.weatherapi.com/) "
+                "([terms](https://www.weatherapi.com/terms.aspx)); check your plan and attribution requirements.")
+
+st.caption("Contains Environment Agency data © Environment Agency copyright and/or database right 2015, "
+           "licensed under the Open Government Licence v3.0. Weather data © WeatherAPI.com when configured.")
