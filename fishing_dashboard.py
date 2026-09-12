@@ -9,6 +9,9 @@ GitHub: save this file as app.py and add a requirements.txt containing:
 Run: streamlit run app.py
 Optional live weather: set WEATHER_API_KEY in Streamlit deployment secrets
 or as a server-side environment variable. Never put the key in GitHub.
+Optional dated beat catches: put a permissioned catch_reports.csv alongside
+this .py file in GitHub, or upload one using the sidebar. The upload takes
+precedence for that session. Beat names from that file appear under each river.
 
 Data: EA annual declared rod catches (2008–2024, 2024 workbook);
 EA 2024 monthly rod catches and estimated grilse; EA gauge readings;
@@ -86,6 +89,9 @@ RIVERS = {
     "Kent": ("Kent", "Kendal, UK"),
     "Leven": ("Leven", "Ulverston, UK"),
 }
+# Verified beats can be listed here; imported catch reports also contribute
+# beat names for their own river. Do not infer beat totals from river data.
+KNOWN_BEATS = {"Border Esk": ("Burnfoot",)}
 ALIASES = {
     "esk (yorks.)": "Esk Yorkshire",
     "esk yorkshire": "Esk Yorkshire",
@@ -668,6 +674,9 @@ def clean_reports(upload, selected_year: int) -> tuple[pd.DataFrame, list[str]]:
             record_id = str(record["report_id"]).strip()
             date = dt.date.fromisoformat(str(record["date"]).strip())
             river = str(record["river"]).strip()
+            beat_name = str(record["beat"]).strip()
+            beat_name = next((known for known in KNOWN_BEATS.get(river, ())
+                              if known.casefold() == beat_name.casefold()), beat_name)
             salmon, grilse, trout = (
                 int(str(record[field]).strip()) for field in ("salmon", "grilse", "sea_trout")
             )
@@ -688,7 +697,7 @@ def clean_reports(upload, selected_year: int) -> tuple[pd.DataFrame, list[str]]:
                        "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"}
             if wind_direction and wind_direction not in compass:
                 raise ValueError("wind direction must be a compass point (e.g. SW)")
-            record.update(date=date, salmon=salmon, grilse=grilse,
+            record.update(date=date, beat=beat_name, salmon=salmon, grilse=grilse,
                           sea_trout=trout, pressure_hpa=value,
                           wind_mph=wind_speed, wind_dir=wind_direction)
             good.append(record)
@@ -702,6 +711,20 @@ def metric_or_dash(value: int | None) -> str:
     return f"{value:,}" if value is not None else "—"
 
 
+def saved_catch_upload():
+    """Load a small permissioned catch CSV checked into the app repository."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catch_reports.csv")
+    if not os.path.isfile(path):
+        return None
+    size = os.path.getsize(path)
+    if size > 2_000_000:
+        raise ValueError("catch_reports.csv exceeds the 2 MB upload limit")
+    with open(path, "rb") as saved:
+        data = io.BytesIO(saved.read())
+    data.size = size
+    return data
+
+
 st.title("Northern salmon and sea trout")
 st.caption("Daily river and weather conditions · Burnfoot seven-day catches · separate EA history")
 
@@ -709,22 +732,49 @@ with st.sidebar:
     st.header("Filters")
     view = st.radio("Dashboard page", ["Last 7 days", "Catch history and reports"])
     river = st.selectbox("River", list(RIVERS), index=0)
+    beat_slot = st.container()  # Filled after the catch CSV has been checked.
     official_name, default_weather = RIVERS[river]
     selected_year = (st.selectbox("Official catch season", list(range(2024, 2007, -1)))
                      if view == "Catch history and reports" else 2024)
     st.divider()
     st.subheader(f"{CURRENT_YEAR} permissioned catch reports")
-    st.caption("Upload only reports you own or have explicit permission to publish. "
-               "The separate Burnfoot FishPal test feed is not included in these CSV totals.")
+    st.caption("Upload reports you can publish, or save catch_reports.csv next to your app "
+               "in GitHub. Uploads replace that saved file for the session. "
+               "The Burnfoot FishPal test feed is not included in these CSV totals.")
     upload = st.file_uploader("Catch CSV", type=["csv"])
+    st.download_button(
+        "Download empty catch CSV template",
+        data=("report_id,date,river,beat,salmon,grilse,sea_trout,time,method,"
+              "pressure_hpa,weather,wind_mph,wind_dir,source_url\n"),
+        file_name="catch_reports.csv", mime="text/csv",
+    )
 
+saved_error = None
+if upload is None:
+    try:
+        upload = saved_catch_upload()
+    except OSError as exc:
+        saved_error = f"Cannot open catch_reports.csv: {exc}"
+    except ValueError as exc:
+        saved_error = str(exc)
 reports, report_problems = clean_reports(upload, CURRENT_YEAR)
+with beat_slot:
+    uploaded_beats = (set(reports.loc[reports["river"] == river, "beat"]) - {""}
+                      if len(reports) else set())
+    beat_options = sorted(set(KNOWN_BEATS.get(river, ())) | uploaded_beats,
+                          key=str.casefold)
+    st.subheader(f"{river} beats")
+    beat = st.radio("Select a beat", ["All beats", *beat_options],
+                    key=f"selected_beat_{river}")
+    if not beat_options:
+        st.caption("No named beats loaded for this river. Add their names to KNOWN_BEATS "
+                   "in the .py file or add dated catches to catch_reports.csv.")
+    if river == "Border Esk":
+        st.caption("[Browse FishPal's Border Esk listings](https://www.fishpal.com/search/in/Border%20Esk) "
+                   "for reference; they are not imported into this app.")
+    st.caption("Beat catches need dated reports for this beat. The EA archive "
+               "and gauge are river-wide.")
 with st.sidebar:
-    beat_options = sorted(set(reports.loc[reports["river"] == river, "beat"]) - {""}) if len(reports) else []
-    if river == "Border Esk" and "Burnfoot" not in beat_options:
-        beat_options.insert(0, "Burnfoot")
-    beat = st.selectbox("Beat (current-year reports only)", ["All beats", *beat_options])
-    st.caption("EA historical catches are river-wide; selecting a beat cannot narrow them.")
     st.divider()
     default_gauge_search = "Canonbie" if river == "Border Esk" else "Esk" if "Esk" in river else river
     search_term = st.text_input("Search EA gauge stations",
@@ -735,6 +785,8 @@ with st.sidebar:
 
 if report_problems:
     st.warning(f"Skipped {len(report_problems)} invalid/duplicate CSV rows. " + "; ".join(report_problems[:3]))
+if saved_error:
+    st.warning(saved_error)
 
 yearly, monthly, grilse_estimates = {}, {}, {}
 if view == "Catch history and reports":
@@ -903,13 +955,13 @@ if view == "Last 7 days":
     if beat != "All beats" and len(daily_uploads):
         daily_uploads = daily_uploads[daily_uploads["beat"] == beat]
     use_fishpal_daily = bool(fishpal_daily)
-    catch_source = "FishPal · Burnfoot only" if use_fishpal_daily else "Uploaded dated reports"
+    catch_source = "FishPal · Burnfoot only" if use_fishpal_daily else "Permissioned dated reports"
     rows = []
     for day in days:
         matching = daily_uploads[daily_uploads["date"] == day] if len(daily_uploads) else daily_uploads
         daily = (fishpal_daily.get(day, {}) if use_fishpal_daily else
                  {"salmon": int(matching["salmon"].sum()),
-                  "sea_trout": int(matching["sea_trout"].sum())} if len(daily_uploads) else {})
+                  "sea_trout": int(matching["sea_trout"].sum())} if len(matching) else {})
         rows.append({"Date": day, "Day": day.strftime("%a %d %b"),
                      "Water level (m)": levels.get(day),
                      "Reported salmon": daily.get("salmon"),
@@ -967,8 +1019,12 @@ if view == "Last 7 days":
                    "days from last week are unknown without a saved dated catch log. "
                    "These bars are Burnfoot-only, even when 'All beats' is selected, and are not added to CSV counts.")
     elif not len(daily_uploads):
-        st.info("No dated catch records available for this river/beat. "
-                "FishPal's seven-day total cannot be split into daily figures.")
+        st.info("No dated catches are loaded for this river/beat. Only Burnfoot has a separate "
+                "test catch feed; other beats need permissioned catch_reports.csv records "
+                "or a sidebar CSV upload. River-wide EA totals are on the history page.")
+    elif not seven["Reported salmon"].notna().any():
+        st.info("No dated catches were reported for this beat in the past seven days. "
+                "This is unknown, not zero; earlier reports are on the history page.")
     if not history_ok:
         st.caption("Past-day weather needs History API access on your WeatherAPI key; "
                    "unavailable days are not filled with today's weather.")
@@ -976,7 +1032,13 @@ if view == "Last 7 days":
 
 st.subheader(f"Official declared rod catches · {selected_year} · {river}")
 if beat != "All beats":
-    st.info("Official figures are available by river, not by beat. They are not shown as Burnfoot/beat catches.")
+    st.info(f"These {selected_year} Environment Agency figures are for the whole {river}, "
+            f"not {beat}. Beat-specific catches appear below only when dated "
+            "permissioned reports or the separate Burnfoot test feed are available.")
+    whole_river = yearly.get((official_name, selected_year), {})
+    r1, r2 = st.columns(2)
+    r1.metric("River-wide salmon", metric_or_dash(whole_river.get("salmon")))
+    r2.metric("River-wide sea trout", metric_or_dash(whole_river.get("sea_trout")))
 else:
     figures = yearly.get((official_name, selected_year), {})
     k1, k2, k3 = st.columns(3)
@@ -1079,15 +1141,19 @@ if len(reports):
         st.dataframe(filtered[["date", "river", "beat", "salmon", "grilse", "sea_trout", "time", "method", "pressure_hpa", "weather", "wind_mph", "wind_dir", "source_url"]],
                      hide_index=True, use_container_width=True)
     else:
-        st.info("No permissioned reports for this river/beat in the uploaded CSV.")
+        st.info("No permissioned catch reports for this river/beat. Check catch_reports.csv "
+                "beside the app or upload a dated CSV in the sidebar.")
 else:
-    st.info("No current-year catch reports loaded. Upload permissioned reports to enable beat totals, time/method details, and monthly pressure/weather/wind alongside catches.")
+    st.info("No current-year beat catch reports loaded. Save permissioned "
+            "catch_reports.csv beside the .py file in GitHub or upload one in the sidebar. "
+            "The Environment Agency publishes annual river-wide totals, not live beat catches.")
 
 with st.expander("CSV format, provenance and commercial launch notes"):
     st.code("report_id,date,river,beat,salmon,grilse,sea_trout,time,method,pressure_hpa,weather,wind_mph,wind_dir,source_url\n"
             f"your-unique-id,{CURRENT_YEAR}-06-15,Border Esk,Burnfoot,1,1,0,18:30,Fly,1013,Cloudy,12,SW,https://your-own-permissioned-record.example", language="csv")
     st.write("One unique report_id per catch record; date must be YYYY-MM-DD. Salmon includes grilse."
-             " The CSV is session-only and does not update a shared database. A zero means an explicitly reported zero, not missing data.")
+             " A sidebar upload is session-only; catch_reports.csv beside the app loads on restart. "
+             "Neither updates a shared database. Zero means an explicitly reported zero, not missing data.")
     st.write("The Burnfoot FishPal feed is for private testing only; confirm FishPal access rights "
              "or arrange a direct Burnfoot feed before public/commercial launch. Before charging subscribers,"
              " add server-side sign-in, verified payment entitlements, durable permissioned reports and a privacy policy."
