@@ -42,6 +42,34 @@ import streamlit as st
 
 
 st.set_page_config(page_title="Northern salmon conditions", page_icon="🎣", layout="wide")
+st.markdown("""<style>
+    :root { --river-ink: #17324a; --river-blue: #126b89; }
+    [data-testid="stAppViewContainer"] {
+        background: linear-gradient(180deg, #edf6f8 0, #f7fafb 310px, #ffffff 620px);
+        color: var(--river-ink);
+    }
+    [data-testid="stSidebar"] { background: #eef4f6; }
+    [data-testid="stSidebar"] [data-testid="stWidgetLabel"] { font-weight: 600; }
+    [data-testid="stMainBlockContainer"] { max-width: 1260px; padding-top: 2rem; }
+    h1, h2, h3 { color: var(--river-ink); letter-spacing: -.025em; }
+    h1 { font-size: clamp(2rem, 3vw, 3rem) !important; }
+    [data-testid="stMetric"] {
+        background: #fff; border: 1px solid #dce9ed; border-radius: 16px;
+        padding: 1rem 1.15rem; box-shadow: 0 6px 18px rgba(21, 64, 82, .045);
+        min-height: 116px;
+    }
+    [data-testid="stMetricLabel"] { color: #587182; font-weight: 600; }
+    [data-testid="stMetricValue"] { color: #103d57; font-size: clamp(1.35rem, 2vw, 1.9rem); }
+    [data-testid="stAlert"] { border-radius: 12px; }
+    [data-testid="stExpander"] { border-radius: 12px; }
+    .river-kicker { color: var(--river-blue); font-size: .78rem; font-weight: 750;
+        letter-spacing: .12em; text-transform: uppercase; margin: 0 0 .4rem; }
+    .river-note { color: #567183; margin: -.4rem 0 1.25rem; }
+    @media (max-width: 700px) {
+        [data-testid="stMainBlockContainer"] { padding-top: 1rem; }
+        [data-testid="stMetric"] { min-height: 95px; padding: .75rem; }
+    }
+</style>""", unsafe_allow_html=True)
 
 EA_ARCHIVE = (
     "https://www.data.gov.uk/dataset/"
@@ -821,29 +849,29 @@ def saved_catch_upload():
     return data
 
 
-st.title("Northern salmon and sea trout")
-st.caption("Daily river and weather conditions · Burnfoot seven-day catches · separate EA history")
+st.markdown('<p class="river-kicker">River & catch dashboard</p>', unsafe_allow_html=True)
+st.title("Northern salmon & sea trout")
+st.caption("Current river conditions and dated catches · official catch history on a separate page")
 
 with st.sidebar:
-    st.header("Filters")
-    view = st.radio("Dashboard page", ["Last 7 days", "Catch history and reports"])
+    st.header("Explore")
+    view = st.radio("View", ["Last 7 days", "Catch history and reports"], horizontal=True)
     river = st.selectbox("River", list(RIVERS), index=0)
     beat_slot = st.container()  # Filled after the catch CSV has been checked.
     official_name, default_weather = RIVERS[river]
     selected_year = (st.selectbox("Official catch season", list(range(2024, 2007, -1)))
                      if view == "Catch history and reports" else 2024)
-    st.divider()
-    st.subheader(f"{CURRENT_YEAR} permissioned catch reports")
-    st.caption("Upload reports you can publish, or save catch_reports.csv next to your app "
-               "in GitHub. Uploads replace that saved file for the session. "
-               "The Burnfoot FishPal test feed is not included in these CSV totals.")
-    upload = st.file_uploader("Catch CSV", type=["csv"])
-    st.download_button(
-        "Download empty catch CSV template",
-        data=("report_id,date,river,beat,salmon,grilse,sea_trout,time,method,"
-              "pressure_hpa,weather,wind_mph,wind_dir,source_url\n"),
-        file_name="catch_reports.csv", mime="text/csv",
-    )
+    with st.expander("Manage catch reports"):
+        st.caption(f"{CURRENT_YEAR} reports you have permission to publish. "
+                   "Uploads replace the saved CSV for this session; FishPal test figures "
+                   "are not included in its totals.")
+        upload = st.file_uploader("Catch CSV", type=["csv"])
+        st.download_button(
+            "Download empty catch CSV template",
+            data=("report_id,date,river,beat,salmon,grilse,sea_trout,time,method,"
+                  "pressure_hpa,weather,wind_mph,wind_dir,source_url\n"),
+            file_name="catch_reports.csv", mime="text/csv",
+        )
 
 saved_error = None
 if upload is None:
@@ -859,19 +887,19 @@ with beat_slot:
                       if len(reports) else set())
     beat_options = sorted(set(KNOWN_BEATS.get(river, ())) | uploaded_beats,
                           key=str.casefold)
-    st.subheader(f"{river} beats")
-    beat = st.radio("Select a beat", ["All beats", *beat_options],
-                    key=f"selected_beat_{river}")
+    beat = st.selectbox("Beat", ["All beats", *beat_options],
+                        key=f"selected_beat_{river}")
     if not beat_options:
         st.caption("No named beats loaded for this river. Add their names to KNOWN_BEATS "
                    "in the .py file or add dated catches to catch_reports.csv.")
+    st.caption("Catch reports are beat-specific; gauge and EA archive figures are river-wide.")
     if river == "Border Esk":
-        st.caption("[Browse FishPal's Border Esk listings](https://www.fishpal.com/search/in/Border%20Esk) "
-                   "for reference; they are not imported into this app.")
-    st.caption("Beat catches need dated reports for this beat. The EA archive "
-               "and gauge are river-wide.")
+        with st.expander("About Border Esk beats"):
+            st.caption("[Browse FishPal's Border Esk listings](https://www.fishpal.com/search/in/Border%20Esk) "
+                       "for reference; they are not imported into this app.")
 with st.sidebar:
     st.divider()
+    st.caption("Nearby conditions and river gauges are approximate, not readings at the beat.")
     if river in RIVER_LOCATIONS:
         chosen_location = st.selectbox("Location on River Wear", RIVER_LOCATIONS[river],
                                        key=f"river_location_{river}")
@@ -947,17 +975,19 @@ for station in stations:
         rloi_id = str(station.get("RLOIid") or "")
         station_lookup[label] = (station_id, rloi_id if rloi_id.isdigit() else "")
 with st.sidebar:
-    gauge_label = st.selectbox("River-level gauge", ["No gauge selected", *station_lookup],
-                               index=1 if automatic_match else 0,
-                               key=f"selected_gauge_v3_{river}_{location.strip().lower()}")
-    st.caption("Automatically chooses the nearest matching river gauge when available. "
-               "Check the station name; its reading is not measured at the beat.")
-    if gauge_error:
-        st.caption("EA station search currently unavailable: " + gauge_error)
-    elif not automatic_match and river != "Border Esk":
-        st.caption("No nearby matching gauge found automatically. Choose a verified search result if available.")
+    with st.expander("Choose river gauge", expanded=not automatic_match):
+        gauge_label = st.selectbox("River-level gauge", ["No gauge selected", *station_lookup],
+                                   index=1 if automatic_match else 0,
+                                   key=f"selected_gauge_v3_{river}_{location.strip().lower()}")
+        st.caption("Check the station name: it is not a beat-level measurement.")
+        if gauge_error:
+            st.caption("EA station search currently unavailable: " + gauge_error)
+        elif not automatic_match and river != "Border Esk":
+            st.caption("No matching gauge was found automatically. Try a nearby station.")
 
-st.subheader("Current conditions")
+st.markdown('<p class="river-kicker">Live snapshot</p>', unsafe_allow_html=True)
+st.subheader(f"{river}" + (f"  ·  {beat}" if beat != "All beats" else "  ·  All beats"))
+st.caption("A river-wide gauge and nearby weather observations · check each reading's timestamp")
 level_col, weather_col, pressure_col, wind_col = st.columns(4)
 current_level_m = None
 if gauge_label != "No gauge selected":
@@ -1008,16 +1038,19 @@ else:
     weather_col.caption("Weather request failed: " + weather_error if weather_error else
                         "Set WEATHER_API_KEY in your deployment secrets.")
 if weather_key:
-    st.info("Weather conditions and forecasts are uncertain and may differ at your exact river or time. "
-            "They are for general information, not the sole basis for personal safety, boating, "
-            "emergency or other safety-critical decisions. Check official meteorological services "
-            "and relevant authorities when accuracy is critical.")
+    with st.expander("Important information about weather and river readings"):
+        st.info("Weather observations and forecasts may differ at the beat and can change. "
+                "Do not rely on them alone for wading, boating or other safety decisions. "
+                "Check the relevant authorities when accuracy is critical.")
 
-st.divider()
 if view == "Last 7 days":
     today = dt.datetime.now(UK_TIME).date()
     days = tuple(today - dt.timedelta(days=offset) for offset in range(6, -1, -1))
-    st.subheader(f"Past 7 days · {river}" + (f" · {beat}" if beat != "All beats" else ""))
+    st.divider()
+    st.markdown('<p class="river-kicker">Seven-day view</p>', unsafe_allow_html=True)
+    st.subheader("Levels, catches & weather")
+    st.caption(f"{days[0]:%d %b}–{days[-1]:%d %b %Y} · "
+               + (f"{river} · {beat}" if beat != "All beats" else river))
     levels = {}
     level_source = "government gauge"
     if gauge_label != "No gauge selected":
@@ -1089,7 +1122,8 @@ if view == "Last 7 days":
                      "Weather icon": weather_icon(day_weather or "Not available")})
     seven = pd.DataFrame(rows)
     light_scope = "Burnfoot only" if beat == "All beats" and use_fishpal_daily else beat
-    st.subheader(f"Today's indicative fishing conditions · {light_scope}")
+    st.markdown("#### Today's indicative conditions")
+    st.caption(f"Comparison scope: {light_scope}. This is not a catch forecast or a safety rating.")
     if beat == "All beats" and not use_fishpal_daily:
         st.info("⚪ Select a beat to compare today's conditions with its recent catch days. "
                 "An all-beats selection may contain incomplete beat coverage.")
@@ -1132,12 +1166,24 @@ if view == "Last 7 days":
             tooltip=[alt.Tooltip("Date:T", format="%a %d %b"),
                      alt.Tooltip("Water level (m):Q", format=".3f")]
         ).properties(height=170, title="Daily mean water level at selected gauge"))
-    if seven["Reported salmon"].notna().any():
-        plots.append(base.mark_bar(color="#e77d30", size=25).encode(
-            y=alt.Y("Reported salmon:Q", title="Reported salmon"),
-            tooltip=[alt.Tooltip("Date:T", format="%a %d %b"), "Reported salmon:Q",
-                     "Reported sea trout:Q", "Water level (m):Q", "Weather:N"]
-        ).properties(height=140, title="Dated catches · " + catch_source))
+    if seven[["Reported salmon", "Reported sea trout"]].notna().any().any():
+        catch_long = seven.melt(
+            id_vars=["Day", "Date", "Water level (m)", "Weather"],
+            value_vars=["Reported salmon", "Reported sea trout"],
+            var_name="Species", value_name="Fish",
+        ).dropna(subset=["Fish"])
+        plots.append(alt.Chart(catch_long).mark_bar(size=13, cornerRadiusTopLeft=3,
+                                                      cornerRadiusTopRight=3).encode(
+            x=alt.X("Day:N", sort=day_labels, title=None,
+                    axis=alt.Axis(labelAngle=0, labelOverlap=False)),
+            xOffset=alt.XOffset("Species:N", sort=["Reported salmon", "Reported sea trout"]),
+            y=alt.Y("Fish:Q", title="Fish reported", axis=alt.Axis(tickMinStep=1)),
+            color=alt.Color("Species:N", scale=alt.Scale(
+                domain=["Reported salmon", "Reported sea trout"],
+                range=["#df7540", "#307fa4"]), legend=alt.Legend(title=None, orient="top")),
+            tooltip=[alt.Tooltip("Date:T", format="%a %d %b"), "Species:N", "Fish:Q",
+                     "Water level (m):Q", "Weather:N"],
+        ).properties(height=155, title="Dated catches · " + catch_source))
     weather_strip = base.mark_text(fontSize=28, baseline="middle").encode(
         y=alt.value(32),
         text=alt.Text("Weather icon:N"),
@@ -1146,15 +1192,8 @@ if view == "Last 7 days":
     ).properties(height=64, title="Weather by day · nearby location")
     plots.append(weather_strip)
     st.altair_chart(alt.vconcat(*plots).resolve_scale(x="shared"), use_container_width=True)
-    st.dataframe(seven.drop(columns="Day"), hide_index=True, use_container_width=True)
-    st.caption("Hover over a weather icon for the exact condition. — means weather data "
-               "were unavailable for that day; today’s icon is the current observation.")
-    st.caption(f"Gauge: {level_source}; observed daily mean grouped by UK calendar date, "
-               "not a reading at the beat. This is a gauge level, not FishPal's height above summer lows. "
-               "catch and gauge data are aligned by date, not by exact catch time. Missing days stay blank. "
-               "Past weather and pressure use nearby daily history, with reported catch-day "
-               "values as a fallback where supplied; today is the current observation, "
-               "not a full-day summary. Daily history is not the catch-time reading.")
+    st.caption("Weather icons show nearby conditions. — means unavailable; today's icon is "
+               "a current observation, not a full-day summary.")
     if level_source.startswith("SEPA"):
         st.caption(f"[SEPA Canonbie station and data]({SEPA_CANONBIE_STATION}); "
                    "[GOV.UK current Canonbie gauge](https://check-for-flooding.service.gov.uk/station/5207). "
@@ -1175,9 +1214,17 @@ if view == "Last 7 days":
     elif not seven["Reported salmon"].notna().any():
         st.info("No dated catches were reported for this beat in the past seven days. "
                 "This is unknown, not zero; earlier reports are on the history page.")
-    if not history_ok:
-        st.caption("Past-day weather needs History API access on your WeatherAPI key; "
-                   "unavailable days are not filled with today's weather.")
+    with st.expander("Daily figures & how to read this chart"):
+        st.dataframe(seven.drop(columns="Day"), hide_index=True, use_container_width=True)
+        st.caption(f"Gauge: {level_source}. Daily mean is grouped by UK calendar date, "
+                   "not a beat-level reading. It is not a FishPal height above summer lows. "
+                   "Catch and gauge values are aligned by date, not by catch time. "
+                   "Missing days stay blank; zero means a reported zero.")
+        st.caption("Historical weather and pressure are nearby daily observations "
+                   "(or recorded catch-day values where provided), not catch-time readings.")
+        if not history_ok:
+            st.caption("Past-day weather needs History API access on your WeatherAPI key; "
+                       "unavailable days are not filled with today's weather.")
     st.stop()
 
 st.subheader(f"Official declared rod catches · {selected_year} · {river}")
