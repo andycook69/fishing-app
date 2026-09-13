@@ -19,6 +19,7 @@ precedence for that session. Beat names from that file appear under each river.
 Data: EA annual declared rod catches (2008–2024, 2024 workbook);
 EA 2024 monthly rod catches and estimated grilse; EA gauge readings;
 WeatherAPI current conditions and forecasts; Environment Agency live tide gauges;
+Open-Meteo modelled tide fallback for private non-commercial testing;
 private-test Burnfoot FishPal monthly figures;
 optional *permissioned* current-year CSV.
 This app has no subscriber authentication or payment integration.
@@ -148,6 +149,7 @@ WEATHER_API = "https://api.weatherapi.com/v1/current.json"
 WEATHER_FORECAST_API = "https://api.weatherapi.com/v1/forecast.json"
 WEATHER_HISTORY_API = "https://api.weatherapi.com/v1/history.json"
 EA_TIDE_API = "https://environment.data.gov.uk/flood-monitoring"
+OPEN_METEO_MARINE_API = "https://marine-api.open-meteo.com/v1/marine"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 FISHPAL_BORDER_ESK_DAILY = "https://www.fishpal.com/scotland/borderesk/catches.html"
 UK_TIME = ZoneInfo("Europe/London")
@@ -603,9 +605,131 @@ def live_tide_observations(latitude: float, longitude: float,
     return {}
 
 
+@st.cache_data(ttl=30 * 60, show_spinner=False)
+def modelled_tide_outlook(latitude: float, longitude: float,
+                          forecast_days: int = 4) -> dict:
+    """Return hourly modelled sea level and derived high/low turning points."""
+    payload = get_json(OPEN_METEO_MARINE_API + "?" + urlencode({
+        "latitude": f"{latitude:.4f}",
+        "longitude": f"{longitude:.4f}",
+        "hourly": "sea_level_height_msl",
+        "timezone": "Europe/London",
+        "forecast_days": max(1, min(forecast_days, 8)),
+        "cell_selection": "sea",
+    }), timeout=20)
+    hourly = payload.get("hourly", {})
+    raw_times = hourly.get("time", [])
+    raw_values = hourly.get("sea_level_height_msl", [])
+    series = []
+    for raw_time, raw_value in zip(raw_times, raw_values):
+        try:
+            timestamp = dt.datetime.fromisoformat(str(raw_time))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UK_TIME)
+            value = float(raw_value)
+            if math.isfinite(value):
+                series.append((timestamp, value))
+        except (TypeError, ValueError):
+            continue
+    if len(series) < 3:
+        return {}
+
+    events = []
+    for index in range(1, len(series) - 1):
+        previous_value = series[index - 1][1]
+        timestamp, value = series[index]
+        next_value = series[index + 1][1]
+        if value > previous_value and value >= next_value:
+            events.append((timestamp, "High", value))
+        elif value < previous_value and value <= next_value:
+            events.append((timestamp, "Low", value))
+
+    now = dt.datetime.now(UK_TIME)
+    nearest_index = min(range(len(series)),
+                        key=lambda i: abs((series[i][0] - now).total_seconds()))
+    current_time, current_value = series[nearest_index]
+    earlier_value = series[max(0, nearest_index - 1)][1]
+    change = current_value - earlier_value
+    trend = "Rising" if change > 0.02 else "Falling" if change < -0.02 else "Steady"
+    return {
+        "series": series,
+        "events": events,
+        "current_time": current_time,
+        "current_value": current_value,
+        "trend": trend,
+        "latitude": payload.get("latitude"),
+        "longitude": payload.get("longitude"),
+    }
+
+
+def render_modelled_tide_outlook(tide_name: str, latitude: float,
+                                  longitude: float) -> bool:
+    """Render a no-key tide-model fallback; return True when data are shown."""
+    try:
+        outlook = modelled_tide_outlook(latitude, longitude)
+    except Exception:
+        return False
+    if not outlook:
+        return False
+
+    now = dt.datetime.now(UK_TIME)
+    future_events = [event for event in outlook["events"] if event[0] >= now]
+    next_high = next((event for event in future_events if event[1] == "High"), None)
+    next_low = next((event for event in future_events if event[1] == "Low"), None)
+    current_col, movement_col, high_col, low_col = st.columns(4)
+    current_col.metric("Modelled sea level now",
+                       f"{outlook['current_value']:.2f} m MSL")
+    movement_col.metric("Tide movement", outlook["trend"])
+    high_col.metric("Next high tide",
+                    next_high[0].strftime("%a %H:%M") if next_high else "—",
+                    f"{next_high[2]:.2f} m MSL" if next_high else None)
+    low_col.metric("Next low tide",
+                   next_low[0].strftime("%a %H:%M") if next_low else "—",
+                   f"{next_low[2]:.2f} m MSL" if next_low else None)
+
+    today = now.date()
+    table_rows = []
+    for day_offset in range(3):
+        day = today + dt.timedelta(days=day_offset)
+        day_events = [event for event in outlook["events"] if event[0].date() == day]
+        highs = [f"{event[0]:%H:%M} ({event[2]:.2f} m)"
+                 for event in day_events if event[1] == "High"]
+        lows = [f"{event[0]:%H:%M} ({event[2]:.2f} m)"
+                for event in day_events if event[1] == "Low"]
+        table_rows.append({"Date": day.strftime("%a %d %b"),
+                           "High tides": " · ".join(highs) or "—",
+                           "Low tides": " · ".join(lows) or "—"})
+    st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+
+    chart_end = now + dt.timedelta(hours=72)
+    chart_rows = [{"Time": timestamp, "Sea level (m MSL)": value}
+                  for timestamp, value in outlook["series"]
+                  if now - dt.timedelta(hours=2) <= timestamp <= chart_end]
+    if len(chart_rows) > 1:
+        chart = alt.Chart(pd.DataFrame(chart_rows)).mark_line(
+            color="#126b89", strokeWidth=2.5
+        ).encode(
+            x=alt.X("Time:T", title="Local time"),
+            y=alt.Y("Sea level (m MSL):Q", title="Modelled sea level (m MSL)",
+                    scale=alt.Scale(zero=False)),
+            tooltip=[alt.Tooltip("Time:T", title="Time", format="%d %b %H:%M"),
+                     alt.Tooltip("Sea level (m MSL):Q", title="Level", format=".2f")],
+        ).properties(height=220)
+        st.altair_chart(chart, use_container_width=True)
+
+    st.caption(
+        f"Modelled tide near {tide_name}, not at Burnfoot. Source: Open-Meteo Marine "
+        "API / Météo-France SMOC tides, approximately 8 km model resolution. Heights "
+        "are relative to global mean sea level (MSL), not chart datum. Free endpoint "
+        "is for this private non-commercial test; commercial launch needs an "
+        "appropriate Open-Meteo plan. Not for navigation or wading-safety decisions."
+    )
+    return True
+
+
 def render_tide_panel(river: str, beat: str) -> None:
     """Show observed tide data in a consistent, prominent position."""
-    burnfoot_tides = river == "Border Esk" and beat == "Burnfoot"
+    burnfoot_tides = river == "Border Esk" and beat in {"All beats", "Burnfoot"}
     tide_heading = ("Live tidal level for Burnfoot" if burnfoot_tides
                     else "Live tide near the river mouth")
     st.markdown(f"#### 🌊 {tide_heading}")
@@ -629,13 +753,15 @@ def render_tide_panel(river: str, beat: str) -> None:
         tide = {}
 
     if not tide:
-        st.info(
-            "The government tide feed has no recent usable reading for this location "
-            "at the moment. This panel is still shown so a temporary feed failure does "
-            "not make the tide section disappear."
-        )
+        st.caption("No suitable recent Environment Agency tide-gauge reading was found; "
+                   "using a modelled Solway tide outlook instead.")
+        if render_modelled_tide_outlook(tide_name, tide_lat, tide_lon):
+            return
+        st.info("Both the government observation feed and the modelled tide feed are "
+                "temporarily unavailable.")
         if st.button("Retry tide feed", key=f"retry_tide_{river}_{beat}"):
             live_tide_observations.clear()
+            modelled_tide_outlook.clear()
             st.rerun()
         return
 
