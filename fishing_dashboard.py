@@ -234,6 +234,88 @@ BURNFOOT_VERIFIED_SEASON = {
     }
 }
 
+# Compact, informational tackle guide for the Burnfoot/Border Esk view. The
+# Mepps 00/No. 1 note is published in FishPal's Border Esk tackle guide. The
+# remaining entries are deliberately described as common starting points, not
+# as proven Burnfoot catch statistics or forecasts.
+BURNFOOT_METHOD_GUIDE = {
+    "Fly": {
+        "Ally's Shrimp": {
+            "conditions": "A versatile salmon starting pattern; try a smaller dressing in low, clear water.",
+            "presentation": "Fish it across and down, adjusting line density and size to the pool and flow.",
+            "evidence": "Common UK salmon pattern; confirm the current Burnfoot preference locally.",
+        },
+        "Cascade": {
+            "conditions": "A general salmon and grilse option in a range of flows.",
+            "presentation": "Use a size and line that keep the fly fishing at a controlled depth and pace.",
+            "evidence": "Common UK salmon pattern; not a verified Burnfoot catch result.",
+        },
+        "Stoat's Tail": {
+            "conditions": "A dark pattern often considered for lower light and sea-trout fishing.",
+            "presentation": "Try it through likely lies without repeatedly covering resting fish.",
+            "evidence": "Common salmon/sea-trout pattern; not a verified Burnfoot catch result.",
+        },
+        "Willie Gunn": {
+            "conditions": "Often used as a visible salmon pattern when the river carries more colour or flow.",
+            "presentation": "Match the dressing weight and line to the depth; avoid fishing below the fish.",
+            "evidence": "Common UK salmon pattern; confirm the current Burnfoot preference locally.",
+        },
+        "Sunray Shadow": {
+            "conditions": "A mobile fly commonly tried in low light or when a stronger silhouette is useful.",
+            "presentation": "Vary the retrieve and angle, provided the beat's current rules allow it.",
+            "evidence": "Common salmon/sea-trout pattern; not a verified Burnfoot catch result.",
+        },
+    },
+    "Spinner": {
+        "Mepps 00": {
+            "conditions": "FishPal's Border Esk guide specifically mentions this tiny spinner for low water, rapids and streamy runs.",
+            "presentation": "Use a light line and a quiet, accurate cast; only spin where the beat permits it.",
+            "evidence": "Border Esk-specific guidance published by FishPal.",
+        },
+        "Mepps No. 1": {
+            "conditions": "FishPal's Border Esk guide specifically mentions this small spinner for low water, rapids and streamy runs.",
+            "presentation": "Keep it working through the current with minimal disturbance; only spin where permitted.",
+            "evidence": "Border Esk-specific guidance published by FishPal.",
+        },
+        "Mepps No. 2": {
+            "conditions": "A slightly larger common option when more presence is wanted than a 00 or No. 1.",
+            "presentation": "Control its depth and speed carefully and avoid snag-prone or resting areas.",
+            "evidence": "Common spinner option; not verified as Burnfoot-specific guidance.",
+        },
+        "Flying C": {
+            "conditions": "A common salmon spinner considered when extra weight or a stronger flow requires it.",
+            "presentation": "Choose the smallest practical weight and retrieve fast enough to keep the blade working.",
+            "evidence": "Common salmon spinner; not verified as Burnfoot-specific guidance.",
+        },
+        "Toby-style spoon": {
+            "conditions": "A common choice for covering broader or deeper water where spinning is allowed.",
+            "presentation": "Vary casting angle and retrieve while keeping the lure clear of the riverbed.",
+            "evidence": "Common salmon/sea-trout lure; not verified as Burnfoot-specific guidance.",
+        },
+        "Other spinner / local advice": {
+            "conditions": "Use this for another spinner recommended by Burnfoot or an experienced local angler.",
+            "presentation": "Record the exact model, colour and blade, then confirm that it complies with current beat rules.",
+            "evidence": "User-entered option; it is not treated as verified Burnfoot guidance by the app.",
+        },
+    },
+    "Worm (date-restricted)": {
+        "Worm fishing": {
+            "conditions": "A Burnfoot method only during the beat's permitted worm-fishing dates.",
+            "presentation": "Ask the fishery which pools, tackle and hook arrangement are permitted before starting.",
+            "evidence": "Burnfoot method confirmed to the app owner, but exact permitted dates have not yet been verified for the app.",
+            "date_restricted": True,
+        },
+    },
+    "Prawn (date-restricted)": {
+        "Prawn fishing": {
+            "conditions": "A Burnfoot method only during the beat's permitted prawn-fishing dates.",
+            "presentation": "Confirm the permitted tackle, hook arrangement and areas with the fishery before fishing.",
+            "evidence": "Burnfoot method confirmed to the app owner, but exact permitted dates have not yet been verified for the app.",
+            "date_restricted": True,
+        },
+    },
+}
+
 
 def get_bytes(url: str, timeout: int = 20) -> bytes:
     request = Request(url, headers={"User-Agent": "NorthernSalmonDashboard/1.0"})
@@ -804,6 +886,77 @@ def render_tide_panel(river: str, beat: str) -> None:
         f"Gauge: {tide['station']}{distance_text} · latest reading {reading_time} "
         "(local time). Source: Environment Agency real-time tide gauge API (Beta)."
     )
+
+
+def render_method_guide(river: str, beat: str) -> None:
+    """Show a compact tackle selector where some local guidance is available."""
+    if river != "Border Esk" or beat not in {"All beats", "Burnfoot"}:
+        return
+
+    with st.expander("🎣 Burnfoot fishing method guide", expanded=False):
+        st.caption(
+            "Choose a method and pattern for a practical starting point. This is "
+            "tackle guidance, not a prediction that fish will be caught."
+        )
+        method_col, choice_col = st.columns(2)
+        method = method_col.selectbox(
+            "Method",
+            list(BURNFOOT_METHOD_GUIDE),
+            key=f"method_family_{river}_{beat}",
+        )
+        choices = list(BURNFOOT_METHOD_GUIDE[method])
+        if len(choices) > 1:
+            choice = choice_col.selectbox(
+                "Pattern or lure",
+                choices,
+                key=f"method_choice_{river}_{beat}_{method}",
+            )
+        else:
+            choice = choices[0]
+            choice_col.markdown("**Selected method**")
+            choice_col.write(choice)
+        guide = BURNFOOT_METHOD_GUIDE[method][choice]
+        if method == "Spinner" and choice == "Flying C":
+            colour_col, blade_col = st.columns(2)
+            flying_c_colour = colour_col.selectbox(
+                "Flying C colour",
+                ["Red", "Black", "Black & Yellow"],
+                key=f"flying_c_colour_{river}_{beat}",
+            )
+            flying_c_blade = blade_col.selectbox(
+                "Blade finish",
+                ["Copper", "Silver"],
+                key=f"flying_c_blade_{river}_{beat}",
+            )
+            st.success(f"Selected spinner: {flying_c_colour} Flying C with a {flying_c_blade.lower()} blade")
+        elif method == "Spinner" and choice == "Other spinner / local advice":
+            other_spinner = st.text_input(
+                "Spinner name, colour and blade",
+                placeholder="For example: model, size, colour and blade finish",
+                key=f"other_spinner_{river}_{beat}",
+            )
+            if other_spinner.strip():
+                st.success(f"Selected spinner: {other_spinner.strip()}")
+        conditions_col, presentation_col = st.columns(2)
+        conditions_col.markdown("**When it may suit**")
+        conditions_col.write(guide["conditions"])
+        presentation_col.markdown("**How to approach it**")
+        presentation_col.write(guide["presentation"])
+        st.caption(f"Evidence note: {guide['evidence']}")
+        if guide.get("date_restricted"):
+            st.error(
+                "Date-restricted method: do not use this method until Burnfoot "
+                "has confirmed that it is permitted on the selected fishing date."
+            )
+        st.markdown(
+            "[FishPal Border Esk tackle and flies]"
+            "(https://www.fishpal.com/scotland/borderesk/tackleandflies.html)"
+        )
+        st.warning(
+            "Check Burnfoot's current permitted methods, hook rules, seasonal "
+            "restrictions and catch-and-release requirements before fishing. "
+            "Conditions and fishery rules can change."
+        )
 
 
 def parse_gauge_csv(content: str, days: list[dt.date]) -> dict[dt.date, float]:
@@ -1517,6 +1670,7 @@ else:
                         "Set WEATHER_API_KEY in your deployment secrets.")
 
 render_tide_panel(river, beat)
+render_method_guide(river, beat)
 
 if view == "Last 7 days":
     st.markdown("#### Weather over the next few days")
