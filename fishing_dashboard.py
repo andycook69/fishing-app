@@ -148,7 +148,6 @@ WEATHER_API = "https://api.weatherapi.com/v1/current.json"
 WEATHER_FORECAST_API = "https://api.weatherapi.com/v1/forecast.json"
 WEATHER_HISTORY_API = "https://api.weatherapi.com/v1/history.json"
 EA_TIDE_API = "https://environment.data.gov.uk/flood-monitoring"
-EASYTIDE = "https://easytide.admiralty.co.uk/"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 FISHPAL_BORDER_ESK_DAILY = "https://www.fishpal.com/scotland/borderesk/catches.html"
 UK_TIME = ZoneInfo("Europe/London")
@@ -220,6 +219,18 @@ ALIASES = {
     "ouse yorkshire*": "Ouse Yorkshire",
 }
 CURRENT_YEAR = dt.datetime.now(dt.timezone.utc).year
+
+# Latest season-to-date totals explicitly confirmed by the fishery. Grilse are
+# already included in the salmon figure and must never be added again. Keep
+# this override dated so the app cannot present an old total as live.
+BURNFOOT_VERIFIED_SEASON = {
+    2026: {
+        "salmon_including_grilse": 192,
+        "reported_date": dt.date(2026, 9, 13),
+        "source_label": "Burnfoot Facebook update",
+        "source_url": "https://www.facebook.com/BorderEskFishing?locale=en_GB",
+    }
+}
 
 
 def get_bytes(url: str, timeout: int = 20) -> bytes:
@@ -1350,13 +1361,13 @@ if view == "Last 7 days":
                    "Current observations above can still be available.")
 
     burnfoot_tides = river == "Border Esk" and beat == "Burnfoot"
-    tide_heading = "Burnfoot tidal details" if burnfoot_tides else "Tides near the river mouth"
+    tide_heading = "Live tidal level for Burnfoot" if burnfoot_tides else "Live tide near the river mouth"
     st.markdown(f"#### 🌊 {tide_heading}")
     tide_name, tide_lat, tide_lon = TIDE_REFERENCES[river]
     if burnfoot_tides:
-        st.caption(f"Live observed tidal level from the closest suitable government gauge "
+        st.caption(f"Actual observed tidal level from the closest suitable government gauge "
                    f"to {tide_name}. Burnfoot is upstream, so this is supporting information "
-                   "rather than a measured water height at the beat.")
+                   "rather than a measurement taken inside the beat; the gauge used is named below.")
     else:
         st.caption(f"Live observed tidal level from the closest suitable government gauge "
                    f"to {tide_name}; this is not a measurement at the selected beat.")
@@ -1366,19 +1377,28 @@ if view == "Last 7 days":
     except Exception:
         tide = {}
     if tide:
-        tide_level_col, tide_trend_col, tide_time_col = st.columns(3)
+        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=24)
+        recent_observations = [
+            (timestamp, value) for timestamp, value in tide["observations"]
+            if timestamp >= cutoff
+        ]
+        recent_values = [value for _, value in recent_observations]
+        observed_high = max(recent_values) if recent_values else tide["value"]
+        observed_low = min(recent_values) if recent_values else tide["value"]
+
+        tide_level_col, tide_trend_col, tide_high_col, tide_low_col = st.columns(4)
         tide_level_col.metric("Latest tidal level",
                               f"{tide['value']:.2f} {tide['unit']}")
         tide_trend_col.metric("Tide movement", tide["trend"],
                               f"{tide['change']:+.2f} m in about 1 hour")
-        tide_time_col.metric("Reading time",
-                             tide["time"].astimezone(UK_TIME).strftime("%H:%M"))
-        tide_time_col.caption(tide["time"].astimezone(UK_TIME).strftime("%a %d %b %Y"))
+        tide_high_col.metric("Observed 24h high",
+                             f"{observed_high:.2f} {tide['unit']}")
+        tide_low_col.metric("Observed 24h low",
+                            f"{observed_low:.2f} {tide['unit']}")
 
-        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=24)
         chart_rows = [
             {"Time": timestamp.astimezone(UK_TIME), "Tidal level": value}
-            for timestamp, value in tide["observations"] if timestamp >= cutoff
+            for timestamp, value in recent_observations
         ]
         if len(chart_rows) > 1:
             tide_frame = pd.DataFrame(chart_rows)
@@ -1397,14 +1417,13 @@ if view == "Last 7 days":
             st.altair_chart(tide_chart, use_container_width=True)
         distance_text = (f" · approximately {tide['distance_km']:.0f} km from the "
                          "river-mouth reference" if math.isfinite(tide["distance_km"]) else "")
-        st.caption(f"Gauge: {tide['station']}{distance_text}. This uses Environment Agency "
+        reading_time = tide["time"].astimezone(UK_TIME).strftime("%H:%M on %a %d %b %Y")
+        st.caption(f"Gauge: {tide['station']}{distance_text} · latest reading {reading_time} "
+                   "(local time). This uses Environment Agency "
                    "tide gauge data from the real-time data API (Beta).")
     else:
         st.info("The free government tide feed has no recent reading available for this "
                 "river-mouth reference at the moment.")
-    st.link_button("Open free 7-day tide predictions", EASYTIDE)
-    st.caption("The button opens ADMIRALTY EasyTide. Forecast values are not copied into this "
-               "dashboard and no tide subscription or additional API key is required.")
 if weather_key:
     with st.expander("Important information about weather and river readings"):
         st.info("Weather observations and forecasts may differ at the beat and can change. "
@@ -1448,13 +1467,33 @@ if view == "Last 7 days":
     fishpal_daily = {}
     fishpal_retrieved = ""
     if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
+        season_status = BURNFOOT_VERIFIED_SEASON.get(CURRENT_YEAR)
+        season_card, recent_card = st.columns(2)
+        if season_status:
+            season_card.metric(
+                "Burnfoot salmon incl. grilse · season to date",
+                f"{season_status['salmon_including_grilse']:,}",
+            )
+        else:
+            season_card.metric("Burnfoot salmon · season to date", "Not verified")
         try:
             fishpal_week, _ = burnfoot_catches(CURRENT_YEAR)
             recent_counts = fishpal_week.get("last_seven", {})
             if "salmon" in recent_counts:
-                st.metric("Burnfoot salmon · last 7 days (FishPal)", recent_counts["salmon"])
+                recent_card.metric("Burnfoot salmon · last 7 days (FishPal)",
+                                   recent_counts["salmon"])
+            else:
+                recent_card.metric("Burnfoot salmon · last 7 days", "Unavailable")
         except Exception:
+            recent_card.metric("Burnfoot salmon · last 7 days", "Unavailable")
             st.warning("Burnfoot's seven-day FishPal total is temporarily unavailable.")
+        if season_status:
+            st.caption(
+                f"Season total verified from [{season_status['source_label']}]"
+                f"({season_status['source_url']}) on "
+                f"{season_status['reported_date']:%d %b %Y}. The 192 total already "
+                "includes grilse; the separate FishPal card covers only the last seven days."
+            )
         try:
             fishpal_daily, fishpal_retrieved = burnfoot_daily_catches(today)
         except Exception:
@@ -1659,16 +1698,32 @@ if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
             for month in range(1, current_month + 1)
         ]
         x, y, z = st.columns(3)
-        x.metric("Burnfoot salmon", sum(row["Salmon"] for row in month_rows))
+        fishpal_salmon_total = sum(row["Salmon"] for row in month_rows)
+        season_status = BURNFOOT_VERIFIED_SEASON.get(CURRENT_YEAR)
+        displayed_salmon_total = (season_status["salmon_including_grilse"]
+                                  if season_status else fishpal_salmon_total)
+        x.metric("Salmon incl. grilse · season to date", displayed_salmon_total)
         y.metric("Burnfoot sea trout", sum(row["Sea trout"] for row in month_rows))
-        z.metric("Grilse", "Not separately reported")
+        z.metric("Grilse subset", "Included in salmon")
+        if season_status and fishpal_salmon_total != displayed_salmon_total:
+            st.info(
+                f"Burnfoot's verified season update reports {displayed_salmon_total:,} salmon "
+                f"including grilse. FishPal's monthly table currently totals "
+                f"{fishpal_salmon_total:,}, so the monthly breakdown is behind the latest "
+                "fishery update and is not used for the season card."
+            )
         fishpal_monthly = pd.DataFrame(month_rows)
         st.bar_chart(fishpal_monthly.set_index("Month")[["Salmon", "Sea trout"]])
         st.dataframe(fishpal_monthly, hide_index=True, use_container_width=True)
-        st.caption(f"[Source: Burnfoot on FishPal]({FISHPAL_BURNFOOT}#CatchesSection) · "
+        verified_note = (f" Season total verified from "
+                         f"[{season_status['source_label']}]({season_status['source_url']}) on "
+                         f"{season_status['reported_date']:%d %b %Y}."
+                         if season_status else "")
+        st.caption(f"[Monthly breakdown: Burnfoot on FishPal]({FISHPAL_BURNFOOT}#CatchesSection) · "
                    f"page retrieved {retrieved_at}; refreshes at most hourly. "
                    "The page gives monthly counts, not catch dates/times, methods, "
-                   "or historical weather/pressure. Grilse may be included in salmon.")
+                   "or historical weather/pressure. Grilse are included in salmon."
+                   + verified_note)
     except Exception as exc:
         st.warning("Burnfoot FishPal catch data are unavailable right now; no figures "
                    "have been inferred from a previous snapshot. " + str(exc))
