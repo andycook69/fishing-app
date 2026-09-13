@@ -18,7 +18,8 @@ precedence for that session. Beat names from that file appear under each river.
 
 Data: EA annual declared rod catches (2008–2024, 2024 workbook);
 EA 2024 monthly rod catches and estimated grilse; EA gauge readings;
-WeatherAPI current conditions; private-test Burnfoot FishPal monthly figures;
+WeatherAPI current conditions, forecasts and estuary tide predictions;
+private-test Burnfoot FishPal monthly figures;
 optional *permissioned* current-year CSV.
 This app has no subscriber authentication or payment integration.
 """
@@ -88,10 +89,43 @@ st.markdown("""<style>
     .river-hero .river-kicker { color: #e5f8fa; text-shadow: 0 1px 6px #122d3b; }
     .river-hero p { color: #f0f9fb; margin: 0; text-shadow: 0 1px 6px #122d3b; }
     .river-hero small { color: #f0f9fb; margin-top: .8rem; font-size: .74rem; }
-    @media (max-width: 700px) {
-        [data-testid="stMainBlockContainer"] { padding-top: 4rem; }
-        [data-testid="stMetric"] { min-height: 95px; padding: .75rem; }
-        .river-hero { min-height: 210px; padding: 1.4rem; }
+    @media (max-width: 768px) {
+        [data-testid="stMainBlockContainer"] {
+            padding: 3.75rem .8rem 2rem !important;
+        }
+        [data-testid="stSidebar"] { max-width: 320px; }
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important; gap: .65rem !important;
+        }
+        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            flex: 1 1 calc(50% - .65rem) !important;
+            min-width: calc(50% - .65rem) !important;
+        }
+        [data-testid="stMetric"] {
+            min-height: 104px; padding: .75rem .8rem;
+            border-radius: 13px;
+        }
+        [data-testid="stMetricLabel"] { font-size: .78rem; }
+        [data-testid="stMetricValue"] { font-size: 1.35rem !important; }
+        .river-hero {
+            min-height: 178px; padding: 1.25rem; border-radius: 14px;
+            background-position: 58% center;
+        }
+        .river-hero h1 { font-size: 1.65rem !important; line-height: 1.08; }
+        .river-hero p { font-size: .9rem; }
+        .river-hero small { font-size: .66rem; }
+        .river-kicker { font-size: .68rem; }
+        h2 { font-size: 1.45rem !important; }
+        h3 { font-size: 1.2rem !important; }
+        [data-testid="stDataFrame"] { overflow-x: auto; }
+        .vega-embed { overflow-x: auto; }
+        .vega-embed details { display: none; }
+    }
+    @media (max-width: 370px) {
+        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            flex-basis: 100% !important; min-width: 100% !important;
+        }
+        .river-hero { min-height: 165px; }
     }
 </style>""", unsafe_allow_html=True)
 
@@ -111,7 +145,9 @@ GOV_GAUGE_CSV = "https://check-for-flooding.service.gov.uk/station-csv/"
 SEPA_CANONBIE_API = "https://timeseries.sepa.org.uk/KiWIS/KiWIS"
 SEPA_CANONBIE_STATION = "https://waterlevels.sepa.org.uk/Station/133148"
 WEATHER_API = "https://api.weatherapi.com/v1/current.json"
+WEATHER_FORECAST_API = "https://api.weatherapi.com/v1/forecast.json"
 WEATHER_HISTORY_API = "https://api.weatherapi.com/v1/history.json"
+WEATHER_MARINE_API = "https://api.weatherapi.com/v1/marine.json"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 FISHPAL_BORDER_ESK_DAILY = "https://www.fishpal.com/scotland/borderesk/catches.html"
 UK_TIME = ZoneInfo("Europe/London")
@@ -143,6 +179,27 @@ RIVERS = {
     "Leven": ("Leven", "Ulverston, UK"),
 }
 RIVER_LOCATIONS = {"Wear": ("Durham, UK", "Chester-le-Street, UK")}
+# Tide predictions are for an approximate coastal/estuary reference point, not
+# for an inland beat. Coordinates intentionally sit at or just seaward of each
+# river mouth so WeatherAPI's marine endpoint can match a marine forecast cell.
+TIDE_REFERENCES = {
+    "Border Esk": ("Solway Firth near the Border Esk mouth", 54.983, -3.020),
+    "Yorkshire Esk": ("Whitby Harbour", 54.490, -0.614),
+    "Cumbrian Esk": ("Ravenglass estuary", 54.353, -3.408),
+    "Tyne": ("Tynemouth / River Tyne mouth", 55.010, -1.421),
+    "Wear": ("Sunderland / River Wear mouth", 54.916, -1.355),
+    "Coquet": ("Amble Harbour / River Coquet mouth", 55.333, -1.575),
+    "Tees": ("Teesmouth", 54.634, -1.133),
+    "Aln": ("Alnmouth", 55.387, -1.613),
+    "Eden": ("Solway Firth near the River Eden mouth", 54.976, -3.008),
+    "Lune": ("Glasson Dock / River Lune estuary", 53.997, -2.850),
+    "Ribble": ("Lytham / Ribble estuary", 53.727, -2.978),
+    "Derwent": ("Workington / River Derwent mouth", 54.650, -3.572),
+    "Ehen": ("Sellafield coast / River Ehen mouth", 54.414, -3.507),
+    "Irt": ("Ravenglass estuary", 54.353, -3.408),
+    "Kent": ("Arnside / Kent estuary", 54.201, -2.836),
+    "Leven": ("Greenodd / Leven estuary", 54.236, -3.060),
+}
 # Verified beats can be listed here; imported catch reports also contribute
 # beat names for their own river. Do not infer beat totals from river data.
 KNOWN_BEATS = {
@@ -383,6 +440,76 @@ def current_weather(key: str, location: str) -> dict:
     if "error" in answer:
         raise ValueError(answer["error"].get("message", "Weather unavailable"))
     return answer
+
+
+@st.cache_data(ttl=45 * 60, show_spinner=False)
+def nearby_forecast(key: str, location: str) -> list[dict]:
+    """Get three future days where supported, falling back to the free tier.
+
+    WeatherAPI counts today in its days parameter. Suppress provider errors so
+    responses (which can contain request details) never disclose the API key.
+    """
+    for forecast_days in (4, 3):
+        try:
+            payload = get_json(WEATHER_FORECAST_API + "?" + urlencode({
+                "key": key, "q": location, "days": forecast_days,
+                "aqi": "no", "alerts": "no",
+            }), timeout=12)
+            if "error" not in payload:
+                return payload.get("forecast", {}).get("forecastday", [])
+        except Exception:
+            pass
+    return []
+
+
+@st.cache_data(ttl=45 * 60, show_spinner=False)
+def estuary_tides(key: str, latitude: float, longitude: float) -> list[dict]:
+    """Return predicted high/low tides without exposing provider errors/keys."""
+    try:
+        payload = get_json(WEATHER_MARINE_API + "?" + urlencode({
+            "key": key,
+            "q": f"{latitude:.4f},{longitude:.4f}",
+            "days": 5,
+            "tides": "yes",
+        }), timeout=12)
+        if "error" in payload:
+            return []
+        return payload.get("forecast", {}).get("forecastday", [])
+    except Exception:
+        return []
+
+
+def tide_table_rows(forecast_days: list[dict]) -> list[dict]:
+    """Flatten WeatherAPI's nested marine tide response into display rows."""
+    rows = []
+    for forecast_day in forecast_days:
+        raw_date = str(forecast_day.get("date") or "")
+        try:
+            date = dt.date.fromisoformat(raw_date)
+            day_label = date.strftime("%a %d %b")
+        except ValueError:
+            day_label = raw_date or "—"
+        tide_groups = forecast_day.get("tides") or []
+        if isinstance(tide_groups, dict):
+            tide_groups = [tide_groups]
+        for group in tide_groups:
+            points = group.get("tide", []) if isinstance(group, dict) else []
+            if isinstance(points, dict):
+                points = [points]
+            for point in points:
+                if not isinstance(point, dict):
+                    continue
+                raw_time = str(point.get("tide_time") or "")
+                time_label = raw_time.rsplit(" ", 1)[-1][:5] if raw_time else "—"
+                height = finite_number(point.get("tide_height_mt"))
+                tide_type = str(point.get("tide_type") or "—").strip().title()
+                rows.append({
+                    "Day": day_label,
+                    "Time": time_label,
+                    "Tide": tide_type,
+                    "Height (m)": round(height, 2) if height is not None else None,
+                })
+    return rows
 
 
 def parse_gauge_csv(content: str, days: list[dt.date]) -> dict[dt.date, float]:
@@ -1094,10 +1221,93 @@ else:
     wind_col.metric("Wind now", status)
     weather_col.caption("Weather request failed: " + weather_error if weather_error else
                         "Set WEATHER_API_KEY in your deployment secrets.")
+if view == "Last 7 days":
+    st.markdown("#### Weather over the next few days")
+    st.caption(f"Near {location} · forecast for "
+               + (f"{beat}, {river}" if beat != "All beats" else river)
+               + "; not measured at the beat")
+    upcoming = []
+    if weather_key:
+        for forecast_day in nearby_forecast(weather_key, location):
+            try:
+                forecast_date = dt.date.fromisoformat(forecast_day["date"])
+                if forecast_date > dt.datetime.now(UK_TIME).date():
+                    upcoming.append((forecast_date, forecast_day))
+            except (KeyError, TypeError, ValueError):
+                continue
+    if upcoming:
+        for column, (forecast_date, forecast_entry) in zip(
+                st.columns(len(upcoming[:3])), upcoming[:3]):
+            day_data = forecast_entry.get("day", {})
+            description = day_data.get("condition", {}).get("text", "Unavailable")
+            maximum = finite_number(day_data.get("maxtemp_c"))
+            minimum = finite_number(day_data.get("mintemp_c"))
+            rain = finite_number(day_data.get("daily_chance_of_rain"))
+            wind = finite_number(day_data.get("maxwind_mph"))
+            noon = next((hour for hour in forecast_entry.get("hour", [])
+                         if str(hour.get("time", "")).endswith("12:00")), {})
+            noon_wind = finite_number(noon.get("wind_mph"))
+            noon_direction = str(noon.get("wind_dir") or "").strip()
+            noon_pressure = finite_number(noon.get("pressure_mb"))
+            high_low = (f"{maximum:g}°C / {minimum:g}°C" if maximum is not None
+                        and minimum is not None else "Temperature unavailable")
+            with column.container(border=True):
+                st.markdown(f"#### {weather_icon(description)} {forecast_date:%a %d %b}")
+                st.write(description)
+                st.markdown(f"**{high_low}** · high / low")
+                st.caption("Rain chance: " + (f"{rain:g}%" if rain is not None else "—")
+                           + " · Max wind: "
+                           + (f"{wind:g} mph" if wind is not None else "—"))
+                if noon_wind is not None or noon_pressure is not None:
+                    st.caption("At 12:00: "
+                               + (f"{noon_direction} {noon_wind:g} mph" if noon_direction
+                                  and noon_wind is not None else "wind unavailable")
+                               + (f" · {noon_pressure:g} hPa" if noon_pressure is not None else ""))
+        st.caption("Forecast: [WeatherAPI.com](https://www.weatherapi.com/) · "
+                   "subject to change; rain chance and maximum wind are daily forecasts.")
+    else:
+        st.caption("Forecast unavailable for this location or API plan. "
+                   "Current observations above can still be available.")
+
+    burnfoot_tides = river == "Border Esk" and beat == "Burnfoot"
+    tide_heading = "Burnfoot tidal details" if burnfoot_tides else "Tides near the river mouth"
+    st.markdown(f"#### 🌊 {tide_heading}")
+    tide_name, tide_lat, tide_lon = TIDE_REFERENCES[river]
+    if burnfoot_tides:
+        st.caption(f"Coastal high and low tide predictions for {tide_name} · local time. "
+                   "Burnfoot is upstream, so these are supporting tidal details rather "
+                   "than a measured water height at the beat.")
+    else:
+        st.caption(f"High and low tide predictions for {tide_name} · local time · "
+                   "this is not the tide at the selected beat")
+    tide_rows = (tide_table_rows(estuary_tides(weather_key, tide_lat, tide_lon))
+                 if weather_key else [])
+    if tide_rows:
+        tide_frame = pd.DataFrame(tide_rows)
+        st.dataframe(
+            tide_frame,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Day": st.column_config.TextColumn("Day"),
+                "Time": st.column_config.TextColumn("Time"),
+                "Tide": st.column_config.TextColumn("Tide"),
+                "Height (m)": st.column_config.NumberColumn("Height (m)", format="%.2f"),
+            },
+        )
+        st.caption("Predicted tides: [WeatherAPI.com](https://www.weatherapi.com/) · "
+                   "check official local tide information before making safety-critical decisions.")
+    elif weather_key:
+        st.info("Tide predictions are unavailable on the current WeatherAPI plan or at this "
+                "marine reference point. WeatherAPI tide data requires Pro+ or above.")
+    else:
+        st.info("Add WEATHER_API_KEY to your deployment secrets to request tide predictions. "
+                "WeatherAPI tide data requires Pro+ or above.")
 if weather_key:
     with st.expander("Important information about weather and river readings"):
         st.info("Weather observations and forecasts may differ at the beat and can change. "
-                "Do not rely on them alone for wading, boating or other safety decisions. "
+                "Estuary tide predictions are not beat-level readings. Do not rely on these "
+                "data alone for wading, boating or other safety decisions. "
                 "Check the relevant authorities when accuracy is critical.")
 
 if view == "Last 7 days":
