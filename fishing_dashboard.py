@@ -603,6 +603,83 @@ def live_tide_observations(latitude: float, longitude: float,
     return {}
 
 
+def render_tide_panel(river: str, beat: str) -> None:
+    """Show observed tide data in a consistent, prominent position."""
+    burnfoot_tides = river == "Border Esk" and beat == "Burnfoot"
+    tide_heading = ("Live tidal level for Burnfoot" if burnfoot_tides
+                    else "Live tide near the river mouth")
+    st.markdown(f"#### 🌊 {tide_heading}")
+    tide_name, tide_lat, tide_lon = TIDE_REFERENCES[river]
+    if burnfoot_tides:
+        st.caption(
+            "Observed tidal level from the closest suitable government gauge to "
+            f"{tide_name}. Burnfoot is upstream, so this is supporting information "
+            "rather than a measurement taken inside the beat."
+        )
+    else:
+        st.caption(
+            "Observed tidal level from the closest suitable government gauge to "
+            f"{tide_name}; this is not a measurement at the selected beat."
+        )
+
+    try:
+        preferred_station = "Metal Bridge" if river == "Border Esk" else ""
+        tide = live_tide_observations(tide_lat, tide_lon, preferred_station)
+    except Exception:
+        tide = {}
+
+    if not tide:
+        st.info(
+            "The government tide feed has no recent usable reading for this location "
+            "at the moment. This panel is still shown so a temporary feed failure does "
+            "not make the tide section disappear."
+        )
+        if st.button("Retry tide feed", key=f"retry_tide_{river}_{beat}"):
+            live_tide_observations.clear()
+            st.rerun()
+        return
+
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=24)
+    recent = [(timestamp, value) for timestamp, value in tide["observations"]
+              if timestamp >= cutoff]
+    recent_values = [value for _, value in recent]
+    observed_high = max(recent_values) if recent_values else tide["value"]
+    observed_low = min(recent_values) if recent_values else tide["value"]
+
+    tide_level_col, tide_trend_col, tide_high_col, tide_low_col = st.columns(4)
+    tide_level_col.metric("Latest tidal level", f"{tide['value']:.2f} {tide['unit']}")
+    tide_trend_col.metric("Tide movement", tide["trend"],
+                          f"{tide['change']:+.2f} m in about 1 hour")
+    tide_high_col.metric("Observed 24h high", f"{observed_high:.2f} {tide['unit']}")
+    tide_low_col.metric("Observed 24h low", f"{observed_low:.2f} {tide['unit']}")
+
+    chart_rows = [{"Time": timestamp.astimezone(UK_TIME), "Tidal level": value}
+                  for timestamp, value in recent]
+    if len(chart_rows) > 1:
+        tide_frame = pd.DataFrame(chart_rows)
+        tide_chart = alt.Chart(tide_frame).mark_line(
+            color="#126b89", strokeWidth=2.5
+        ).encode(
+            x=alt.X("Time:T", title="Local time"),
+            y=alt.Y("Tidal level:Q", title=f"Level ({tide['unit']})",
+                    scale=alt.Scale(zero=False)),
+            tooltip=[
+                alt.Tooltip("Time:T", title="Time", format="%d %b %H:%M"),
+                alt.Tooltip("Tidal level:Q", title=f"Level ({tide['unit']})", format=".2f"),
+            ],
+        ).properties(height=220)
+        st.altair_chart(tide_chart, use_container_width=True)
+
+    distance_text = (f" · approximately {tide['distance_km']:.0f} km from the "
+                     "river-mouth reference"
+                     if math.isfinite(tide["distance_km"]) else "")
+    reading_time = tide["time"].astimezone(UK_TIME).strftime("%H:%M on %a %d %b %Y")
+    st.caption(
+        f"Gauge: {tide['station']}{distance_text} · latest reading {reading_time} "
+        "(local time). Source: Environment Agency real-time tide gauge API (Beta)."
+    )
+
+
 def parse_gauge_csv(content: str, days: list[dt.date]) -> dict[dt.date, float]:
     by_day = {}
     for row in csv.DictReader(io.StringIO(content)):
@@ -1312,6 +1389,9 @@ else:
     wind_col.metric("Wind now", status)
     weather_col.caption("Weather request failed: " + weather_error if weather_error else
                         "Set WEATHER_API_KEY in your deployment secrets.")
+
+render_tide_panel(river, beat)
+
 if view == "Last 7 days":
     st.markdown("#### Weather over the next few days")
     st.caption(f"Near {location} · forecast for "
@@ -1360,70 +1440,6 @@ if view == "Last 7 days":
         st.caption("Forecast unavailable for this location or API plan. "
                    "Current observations above can still be available.")
 
-    burnfoot_tides = river == "Border Esk" and beat == "Burnfoot"
-    tide_heading = "Live tidal level for Burnfoot" if burnfoot_tides else "Live tide near the river mouth"
-    st.markdown(f"#### 🌊 {tide_heading}")
-    tide_name, tide_lat, tide_lon = TIDE_REFERENCES[river]
-    if burnfoot_tides:
-        st.caption(f"Actual observed tidal level from the closest suitable government gauge "
-                   f"to {tide_name}. Burnfoot is upstream, so this is supporting information "
-                   "rather than a measurement taken inside the beat; the gauge used is named below.")
-    else:
-        st.caption(f"Live observed tidal level from the closest suitable government gauge "
-                   f"to {tide_name}; this is not a measurement at the selected beat.")
-    try:
-        preferred_tide_station = "Metal Bridge" if river == "Border Esk" else ""
-        tide = live_tide_observations(tide_lat, tide_lon, preferred_tide_station)
-    except Exception:
-        tide = {}
-    if tide:
-        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=24)
-        recent_observations = [
-            (timestamp, value) for timestamp, value in tide["observations"]
-            if timestamp >= cutoff
-        ]
-        recent_values = [value for _, value in recent_observations]
-        observed_high = max(recent_values) if recent_values else tide["value"]
-        observed_low = min(recent_values) if recent_values else tide["value"]
-
-        tide_level_col, tide_trend_col, tide_high_col, tide_low_col = st.columns(4)
-        tide_level_col.metric("Latest tidal level",
-                              f"{tide['value']:.2f} {tide['unit']}")
-        tide_trend_col.metric("Tide movement", tide["trend"],
-                              f"{tide['change']:+.2f} m in about 1 hour")
-        tide_high_col.metric("Observed 24h high",
-                             f"{observed_high:.2f} {tide['unit']}")
-        tide_low_col.metric("Observed 24h low",
-                            f"{observed_low:.2f} {tide['unit']}")
-
-        chart_rows = [
-            {"Time": timestamp.astimezone(UK_TIME), "Tidal level": value}
-            for timestamp, value in recent_observations
-        ]
-        if len(chart_rows) > 1:
-            tide_frame = pd.DataFrame(chart_rows)
-            tide_chart = alt.Chart(tide_frame).mark_line(
-                color="#126b89", strokeWidth=2.5
-            ).encode(
-                x=alt.X("Time:T", title="Local time"),
-                y=alt.Y("Tidal level:Q", title=f"Level ({tide['unit']})",
-                        scale=alt.Scale(zero=False)),
-                tooltip=[
-                    alt.Tooltip("Time:T", title="Time", format="%d %b %H:%M"),
-                    alt.Tooltip("Tidal level:Q", title=f"Level ({tide['unit']})",
-                                format=".2f"),
-                ],
-            ).properties(height=220)
-            st.altair_chart(tide_chart, use_container_width=True)
-        distance_text = (f" · approximately {tide['distance_km']:.0f} km from the "
-                         "river-mouth reference" if math.isfinite(tide["distance_km"]) else "")
-        reading_time = tide["time"].astimezone(UK_TIME).strftime("%H:%M on %a %d %b %Y")
-        st.caption(f"Gauge: {tide['station']}{distance_text} · latest reading {reading_time} "
-                   "(local time). This uses Environment Agency "
-                   "tide gauge data from the real-time data API (Beta).")
-    else:
-        st.info("The free government tide feed has no recent reading available for this "
-                "river-mouth reference at the moment.")
 if weather_key:
     with st.expander("Important information about weather and river readings"):
         st.info("Weather observations and forecasts may differ at the beat and can change. "
