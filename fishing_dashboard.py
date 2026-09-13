@@ -18,7 +18,7 @@ precedence for that session. Beat names from that file appear under each river.
 
 Data: EA annual declared rod catches (2008–2024, 2024 workbook);
 EA 2024 monthly rod catches and estimated grilse; EA gauge readings;
-WeatherAPI current conditions, forecasts and estuary tide predictions;
+WeatherAPI current conditions and forecasts; Environment Agency live tide gauges;
 private-test Burnfoot FishPal monthly figures;
 optional *permissioned* current-year CSV.
 This app has no subscriber authentication or payment integration.
@@ -147,7 +147,8 @@ SEPA_CANONBIE_STATION = "https://waterlevels.sepa.org.uk/Station/133148"
 WEATHER_API = "https://api.weatherapi.com/v1/current.json"
 WEATHER_FORECAST_API = "https://api.weatherapi.com/v1/forecast.json"
 WEATHER_HISTORY_API = "https://api.weatherapi.com/v1/history.json"
-WEATHER_MARINE_API = "https://api.weatherapi.com/v1/marine.json"
+EA_TIDE_API = "https://environment.data.gov.uk/flood-monitoring"
+EASYTIDE = "https://easytide.admiralty.co.uk/"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 FISHPAL_BORDER_ESK_DAILY = "https://www.fishpal.com/scotland/borderesk/catches.html"
 UK_TIME = ZoneInfo("Europe/London")
@@ -179,9 +180,8 @@ RIVERS = {
     "Leven": ("Leven", "Ulverston, UK"),
 }
 RIVER_LOCATIONS = {"Wear": ("Durham, UK", "Chester-le-Street, UK")}
-# Tide predictions are for an approximate coastal/estuary reference point, not
-# for an inland beat. Coordinates intentionally sit at or just seaward of each
-# river mouth so WeatherAPI's marine endpoint can match a marine forecast cell.
+# Approximate river-mouth coordinates used to locate the nearest EA live tide
+# gauge. These are reference points, not readings at an inland fishing beat.
 TIDE_REFERENCES = {
     "Border Esk": ("Solway Firth near the Border Esk mouth", 54.983, -3.020),
     "Yorkshire Esk": ("Whitby Harbour", 54.490, -0.614),
@@ -462,54 +462,134 @@ def nearby_forecast(key: str, location: str) -> list[dict]:
     return []
 
 
-@st.cache_data(ttl=45 * 60, show_spinner=False)
-def estuary_tides(key: str, latitude: float, longitude: float) -> list[dict]:
-    """Return predicted high/low tides without exposing provider errors/keys."""
-    try:
-        payload = get_json(WEATHER_MARINE_API + "?" + urlencode({
-            "key": key,
-            "q": f"{latitude:.4f},{longitude:.4f}",
-            "days": 5,
-            "tides": "yes",
-        }), timeout=12)
-        if "error" in payload:
-            return []
-        return payload.get("forecast", {}).get("forecastday", [])
-    except Exception:
-        return []
+def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance used only to rank nearby monitoring stations."""
+    radius = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    part = (math.sin(d_phi / 2) ** 2
+            + math.cos(phi1) * math.cos(phi2) * math.sin(d_lon / 2) ** 2)
+    return radius * 2 * math.atan2(math.sqrt(part), math.sqrt(1 - part))
 
 
-def tide_table_rows(forecast_days: list[dict]) -> list[dict]:
-    """Flatten WeatherAPI's nested marine tide response into display rows."""
-    rows = []
-    for forecast_day in forecast_days:
-        raw_date = str(forecast_day.get("date") or "")
+def object_list(value: object) -> list[dict]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+@st.cache_data(ttl=15 * 60, show_spinner=False)
+def live_tide_observations(latitude: float, longitude: float,
+                           preferred_search: str = "") -> dict:
+    """Return the closest usable EA tidal/estuary gauge and recent readings."""
+    candidates = []
+    if preferred_search:
         try:
-            date = dt.date.fromisoformat(raw_date)
-            day_label = date.strftime("%a %d %b")
-        except ValueError:
-            day_label = raw_date or "—"
-        tide_groups = forecast_day.get("tides") or []
-        if isinstance(tide_groups, dict):
-            tide_groups = [tide_groups]
-        for group in tide_groups:
-            points = group.get("tide", []) if isinstance(group, dict) else []
-            if isinstance(points, dict):
-                points = [points]
-            for point in points:
-                if not isinstance(point, dict):
+            candidates.extend(object_list(get_json(
+                GAUGE_API + "?" + urlencode({
+                    "search": preferred_search, "_view": "full", "_limit": 50,
+                }), timeout=18).get("items")))
+        except Exception:
+            pass
+    candidates.extend(object_list(get_json(
+        GAUGE_API + "?" + urlencode({
+            "type": "TideGauge", "unitName": "mAOD",
+            "lat": f"{latitude:.4f}", "long": f"{longitude:.4f}",
+            "dist": 150, "_view": "full", "_limit": 100,
+        }), timeout=20).get("items")))
+
+    unique = {}
+    for station in candidates:
+        station_id = str(station.get("notation") or station.get("stationReference") or "")
+        if station_id:
+            unique.setdefault(station_id, station)
+
+    def station_rank(station: dict) -> tuple[int, float]:
+        label = str(station.get("label") or "").lower()
+        preferred = 0 if preferred_search and preferred_search.lower() in label else 1
+        try:
+            distance = distance_km(latitude, longitude,
+                                   float(station["lat"]), float(station["long"]))
+        except (KeyError, TypeError, ValueError):
+            distance = 10_000.0
+        # Do not select an identically named inland station from another region.
+        if preferred == 0 and distance > 80:
+            preferred = 2
+        return preferred, distance
+
+    for station in sorted(unique.values(), key=station_rank)[:12]:
+        station_id = str(station.get("notation") or station.get("stationReference") or "")
+        measures = object_list(station.get("measures"))
+        if not measures and station_id and all(c.isalnum() or c in "_-" for c in station_id):
+            try:
+                measures = object_list(get_json(
+                    f"{GAUGE_API}/{station_id}/measures", timeout=12).get("items"))
+            except Exception:
+                continue
+        def measure_rank(measure: dict) -> tuple[int, int, float]:
+            try:
+                period_gap = abs(float(measure.get("period") or 900) - 900)
+            except (TypeError, ValueError):
+                period_gap = 10_000.0
+            return (
+                0 if "tidal" in str(measure.get("qualifier") or "").lower() else 1,
+                0 if str(measure.get("unitName") or "").lower() == "maod" else 1,
+                period_gap,
+            )
+
+        measures.sort(key=measure_rank)
+        for measure in measures:
+            qualifier = str(measure.get("qualifier") or "").lower()
+            is_preferred_station = bool(preferred_search) and (
+                preferred_search.lower() in str(station.get("label") or "").lower()
+            )
+            if "tidal" not in qualifier and not is_preferred_station:
+                continue
+            measure_id = str(measure.get("notation") or "")
+            if not measure_id or not all(c.isalnum() or c in "_-" for c in measure_id):
+                continue
+            since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=30))
+            try:
+                payload = get_json(
+                    f"{EA_TIDE_API}/id/measures/{measure_id}/readings?" + urlencode({
+                        "since": since.isoformat(timespec="seconds"),
+                        "_sorted": "", "_limit": 250,
+                    }), timeout=18)
+            except Exception:
+                continue
+            observations = []
+            for reading in object_list(payload.get("items")):
+                try:
+                    timestamp = dt.datetime.fromisoformat(
+                        str(reading["dateTime"]).replace("Z", "+00:00"))
+                    value = float(reading["value"])
+                    if timestamp.tzinfo and math.isfinite(value):
+                        observations.append((timestamp, value))
+                except (KeyError, TypeError, ValueError):
                     continue
-                raw_time = str(point.get("tide_time") or "")
-                time_label = raw_time.rsplit(" ", 1)[-1][:5] if raw_time else "—"
-                height = finite_number(point.get("tide_height_mt"))
-                tide_type = str(point.get("tide_type") or "—").strip().title()
-                rows.append({
-                    "Day": day_label,
-                    "Time": time_label,
-                    "Tide": tide_type,
-                    "Height (m)": round(height, 2) if height is not None else None,
-                })
-    return rows
+            observations.sort(key=lambda item: item[0])
+            if not observations:
+                continue
+            latest_time, latest_value = observations[-1]
+            prior = min(observations[:-1] or observations,
+                        key=lambda item: abs((item[0] - latest_time
+                                              + dt.timedelta(hours=1)).total_seconds()))
+            change = latest_value - prior[1]
+            trend = "Rising" if change > 0.03 else "Falling" if change < -0.03 else "Steady"
+            return {
+                "station": station.get("label") or station_id,
+                "value": latest_value,
+                "unit": measure.get("unitName") or "mAOD",
+                "time": latest_time,
+                "trend": trend,
+                "change": change,
+                "distance_km": station_rank(station)[1],
+                "observations": observations,
+            }
+    return {}
 
 
 def parse_gauge_csv(content: str, days: list[dt.date]) -> dict[dt.date, float]:
@@ -1274,39 +1354,61 @@ if view == "Last 7 days":
     st.markdown(f"#### 🌊 {tide_heading}")
     tide_name, tide_lat, tide_lon = TIDE_REFERENCES[river]
     if burnfoot_tides:
-        st.caption(f"Coastal high and low tide predictions for {tide_name} · local time. "
-                   "Burnfoot is upstream, so these are supporting tidal details rather "
-                   "than a measured water height at the beat.")
+        st.caption(f"Live observed tidal level from the closest suitable government gauge "
+                   f"to {tide_name}. Burnfoot is upstream, so this is supporting information "
+                   "rather than a measured water height at the beat.")
     else:
-        st.caption(f"High and low tide predictions for {tide_name} · local time · "
-                   "this is not the tide at the selected beat")
-    tide_rows = (tide_table_rows(estuary_tides(weather_key, tide_lat, tide_lon))
-                 if weather_key else [])
-    if tide_rows:
-        tide_frame = pd.DataFrame(tide_rows)
-        st.dataframe(
-            tide_frame,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Day": st.column_config.TextColumn("Day"),
-                "Time": st.column_config.TextColumn("Time"),
-                "Tide": st.column_config.TextColumn("Tide"),
-                "Height (m)": st.column_config.NumberColumn("Height (m)", format="%.2f"),
-            },
-        )
-        st.caption("Predicted tides: [WeatherAPI.com](https://www.weatherapi.com/) · "
-                   "check official local tide information before making safety-critical decisions.")
-    elif weather_key:
-        st.info("Tide predictions are unavailable on the current WeatherAPI plan or at this "
-                "marine reference point. WeatherAPI tide data requires Pro+ or above.")
+        st.caption(f"Live observed tidal level from the closest suitable government gauge "
+                   f"to {tide_name}; this is not a measurement at the selected beat.")
+    try:
+        preferred_tide_station = "Metal Bridge" if river == "Border Esk" else ""
+        tide = live_tide_observations(tide_lat, tide_lon, preferred_tide_station)
+    except Exception:
+        tide = {}
+    if tide:
+        tide_level_col, tide_trend_col, tide_time_col = st.columns(3)
+        tide_level_col.metric("Latest tidal level",
+                              f"{tide['value']:.2f} {tide['unit']}")
+        tide_trend_col.metric("Tide movement", tide["trend"],
+                              f"{tide['change']:+.2f} m in about 1 hour")
+        tide_time_col.metric("Reading time",
+                             tide["time"].astimezone(UK_TIME).strftime("%H:%M"))
+        tide_time_col.caption(tide["time"].astimezone(UK_TIME).strftime("%a %d %b %Y"))
+
+        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=24)
+        chart_rows = [
+            {"Time": timestamp.astimezone(UK_TIME), "Tidal level": value}
+            for timestamp, value in tide["observations"] if timestamp >= cutoff
+        ]
+        if len(chart_rows) > 1:
+            tide_frame = pd.DataFrame(chart_rows)
+            tide_chart = alt.Chart(tide_frame).mark_line(
+                color="#126b89", strokeWidth=2.5
+            ).encode(
+                x=alt.X("Time:T", title="Local time"),
+                y=alt.Y("Tidal level:Q", title=f"Level ({tide['unit']})",
+                        scale=alt.Scale(zero=False)),
+                tooltip=[
+                    alt.Tooltip("Time:T", title="Time", format="%d %b %H:%M"),
+                    alt.Tooltip("Tidal level:Q", title=f"Level ({tide['unit']})",
+                                format=".2f"),
+                ],
+            ).properties(height=220)
+            st.altair_chart(tide_chart, use_container_width=True)
+        distance_text = (f" · approximately {tide['distance_km']:.0f} km from the "
+                         "river-mouth reference" if math.isfinite(tide["distance_km"]) else "")
+        st.caption(f"Gauge: {tide['station']}{distance_text}. This uses Environment Agency "
+                   "tide gauge data from the real-time data API (Beta).")
     else:
-        st.info("Add WEATHER_API_KEY to your deployment secrets to request tide predictions. "
-                "WeatherAPI tide data requires Pro+ or above.")
+        st.info("The free government tide feed has no recent reading available for this "
+                "river-mouth reference at the moment.")
+    st.link_button("Open free 7-day tide predictions", EASYTIDE)
+    st.caption("The button opens ADMIRALTY EasyTide. Forecast values are not copied into this "
+               "dashboard and no tide subscription or additional API key is required.")
 if weather_key:
     with st.expander("Important information about weather and river readings"):
         st.info("Weather observations and forecasts may differ at the beat and can change. "
-                "Estuary tide predictions are not beat-level readings. Do not rely on these "
+                "Estuary tide observations are not beat-level readings. Do not rely on these "
                 "data alone for wading, boating or other safety decisions. "
                 "Check the relevant authorities when accuracy is critical.")
 
