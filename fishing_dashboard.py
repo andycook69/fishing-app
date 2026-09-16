@@ -975,11 +975,13 @@ def parse_sepa_levels(content: str, days: tuple[dt.date, ...]) -> dict[dt.date, 
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def sepa_canonbie_daily_levels(days: tuple[dt.date, ...]) -> dict:
-    # Station/path comes from SEPA's own Canonbie station page (1-month download).
+    # Station/path comes from SEPA's own Canonbie station page. Request enough
+    # history for the comparison window while keeping the download small.
+    period_days = max(8, min(31, (dt.datetime.now(UK_TIME).date() - days[0]).days + 2))
     query = {
         "service": "kisters", "type": "queryServices", "datasource": "0",
         "request": "getTimeseriesValues", "ts_path": "1/133148/SG/15m.Cmd",
-        "period": "P8D", "metadata": "true", "returnfields": "Timestamp,Value",
+        "period": f"P{period_days}D", "metadata": "true", "returnfields": "Timestamp,Value",
         "dateformat": "yyyy-MM-dd'T'HH:mm:ssXXX", "format": "csv", "csvdiv": ",",
     }
     content = get_bytes(SEPA_CANONBIE_API + "?" + urlencode(query), timeout=8).decode(
@@ -1029,12 +1031,13 @@ def gauge_daily_levels(station_id: str, rloi_id: str, days: tuple[dt.date, ...])
 
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
-def weather_daily_history(key: str, location: str, days: tuple[dt.date, ...]) -> tuple[dict, dict, bool]:
-    result, pressures = {}, {}
+def weather_daily_history(key: str, location: str, days: tuple[dt.date, ...]) -> tuple[dict, dict, dict, bool]:
+    """Return daily weather plus numeric observations used by the condition model."""
+    result, pressures, details = {}, {}, {}
     requested_days = [day for day in days
                       if day != dt.datetime.now(UK_TIME).date()]
 
-    def fetch_day(day: dt.date) -> tuple[dt.date, str, float | None]:
+    def fetch_day(day: dt.date) -> tuple[dt.date, str, float | None, dict]:
         payload = get_json(WEATHER_HISTORY_API + "?" + urlencode({
             "key": key, "q": location, "dt": day.isoformat(),
         }), timeout=8)
@@ -1049,21 +1052,27 @@ def weather_daily_history(key: str, location: str, days: tuple[dt.date, ...]) ->
             except (KeyError, TypeError, ValueError):
                 continue
         pressure = round(sum(hourly) / len(hourly), 1) if len(hourly) >= 8 else None
-        return day, str(summary["condition"]["text"]), pressure
+        detail = {
+            "rain_mm": finite_number(summary.get("totalprecip_mm")),
+            "mean_air_temp_c": finite_number(summary.get("avgtemp_c")),
+            "max_wind_mph": finite_number(summary.get("maxwind_mph")),
+        }
+        return day, str(summary["condition"]["text"]), pressure, detail
 
     successful = 0
     with ThreadPoolExecutor(max_workers=min(6, max(1, len(requested_days)))) as pool:
         futures = [pool.submit(fetch_day, day) for day in requested_days]
         for future in as_completed(futures):
             try:
-                day, condition, pressure = future.result()
+                day, condition, pressure, detail = future.result()
                 result[day] = condition
                 if pressure is not None:
                     pressures[day] = pressure
+                details[day] = detail
                 successful += 1
             except Exception:
                 continue
-    return result, pressures, successful == len(requested_days)
+    return result, pressures, details, successful == len(requested_days)
 
 
 def weather_icon(condition: str) -> str:
@@ -1118,53 +1127,233 @@ def finite_number(value: object) -> float | None:
         return None
 
 
-def catch_condition_light(rows: list[dict], today: dt.date,
-                          current_level: object, current_weather: str,
-                          current_pressure: object) -> tuple[str | None, str]:
-    """Experimental match to completed catch days, not a catch/safety forecast."""
-    level = finite_number(current_level)
-    pressure = finite_number(current_pressure)
-    group = weather_group(current_weather)
-    if level is None or pressure is None or group is None:
-        return None, "A fresh gauge level, current weather and air pressure are all needed."
-    observed = []
-    for row in rows:
-        if row["Date"] >= today:
-            continue
-        salmon = finite_number(row["Reported salmon"])
-        trout = finite_number(row["Reported sea trout"])
-        past_level = finite_number(row["Water level (m)"])
-        past_pressure = finite_number(row["Pressure (hPa)"])
-        past_weather = weather_group(row["Weather"])
-        if (salmon is None or trout is None or past_level is None
-                or past_pressure is None or past_weather is None):
-            continue
-        observed.append((row["Date"], salmon + trout, past_level,
-                         past_pressure, past_weather))
-    positive = [sample for sample in observed if sample[1] > 0]
-    if len(observed) < 4 or len(positive) < 2:
-        return None, (f"Only {len(observed)} complete prior catch/level/weather/pressure "
-                      f"days ({len(positive)} with fish). Need at least four complete "
-                      "days and two catch days for this beat.")
+def estimate_water_temperature(today: dt.date, current_weather: dict,
+                               weather_details: dict, levels: dict,
+                               current_level: object) -> dict | None:
+    """Estimate present river temperature from recent air temperatures.
 
-    recent = sorted(observed, key=lambda sample: sample[0])[-3:]
-    catch_points = min(2, sum(sample[1] > 0 for sample in recent))
-    good_levels = [sample[2] for sample in positive]
-    good_pressures = [sample[3] for sample in positive]
-    level_gap = (min(good_levels) - level if level < min(good_levels)
-                 else level - max(good_levels) if level > max(good_levels) else 0)
-    level_points = 2 if level_gap == 0 else 1 if level_gap <= 0.10 else 0
-    pressure_gap = abs(pressure - median(good_pressures))
-    pressure_points = 2 if pressure_gap <= 4 else 1 if pressure_gap <= 8 else 0
-    groups = Counter(sample[4] for sample in positive)
-    weather_points = 2 if group == groups.most_common(1)[0][0] else 1 if group in groups else 0
-    points = catch_points + level_points + pressure_points + weather_points
-    label = "Excellent" if points >= 7 else "Moderate" if points >= 4 else "Poor"
-    note = (f"Experimental match to {len(observed)} recent complete days for this beat "
-            f"({len(positive)} with fish). Catch trend {catch_points}/2 · "
-            f"gauge level {level_points}/2 · weather {weather_points}/2 · "
-            f"pressure {pressure_points}/2. This is not a tested prediction or a safety rating.")
-    return label, note
+    This is a deliberately transparent screening estimate, not a hydrological
+    model or sensor reading. Rainfall and a changing river level widen the
+    uncertainty band rather than assuming incoming water is warmer or colder.
+    """
+    # Broad northern-UK seasonal anchors. They stabilise the estimate when a
+    # short warm/cold spell makes air temperature unlike slower-moving water.
+    seasonal_anchor = {
+        1: 5.0, 2: 5.0, 3: 6.0, 4: 8.0, 5: 10.5, 6: 13.0,
+        7: 15.0, 8: 15.0, 9: 13.0, 10: 10.0, 11: 7.5, 12: 5.5,
+    }[today.month]
+    samples = []
+    for offset in range(5, 0, -1):
+        day = today - dt.timedelta(days=offset)
+        value = finite_number(weather_details.get(day, {}).get("mean_air_temp_c"))
+        if value is not None:
+            samples.append(value)
+    current_air = finite_number(current_weather.get("temp_c"))
+    if current_air is not None:
+        samples.append(current_air)
+    if not samples:
+        return None
+
+    # More recent observations have more influence. Water is damped towards a
+    # seasonal anchor because it normally changes more slowly than the air.
+    weights = list(range(1, len(samples) + 1))
+    weighted_air = sum(value * weight for value, weight in zip(samples, weights)) / sum(weights)
+    estimate = max(1.0, min(22.0, 0.60 * weighted_air + 0.40 * seasonal_anchor))
+
+    uncertainty = 1.8 if len(samples) >= 4 else 2.8
+    rainfall = sum(value for value in (
+        finite_number(weather_details.get(today - dt.timedelta(days=offset), {}).get("rain_mm"))
+        for offset in (1, 2, 3)
+    ) if value is not None)
+    if rainfall > 25:
+        uncertainty += 0.5
+    level = finite_number(current_level)
+    prior_levels = sorted((day, finite_number(value)) for day, value in levels.items()
+                          if day < today and finite_number(value) is not None)
+    if level is not None and prior_levels and abs(level - prior_levels[-1][1]) > 0.25:
+        uncertainty += 0.5
+    confidence = "Medium" if len(samples) >= 4 and current_air is not None else "Low"
+    return {
+        "value": round(estimate, 1),
+        "low": round(max(0.0, estimate - uncertainty), 1),
+        "high": round(estimate + uncertainty, 1),
+        "confidence": confidence,
+        "air_samples": len(samples),
+        "rainfall_mm": round(rainfall, 1),
+    }
+
+
+def _closeness(value: float, centre: float, full_band: float, zero_band: float) -> float:
+    """A transparent 0–1 suitability curve around an observed/defined centre."""
+    gap = abs(value - centre)
+    if gap <= full_band:
+        return 1.0
+    if gap >= zero_band:
+        return 0.0
+    return 1 - (gap - full_band) / (zero_band - full_band)
+
+
+def _time_group(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    if text in {"dawn", "morning", "afternoon", "evening"}:
+        return text
+    match = re.search(r"(?:^|\s)([01]?\d|2[0-3])(?::[0-5]\d)?", text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    return "dawn" if hour < 8 else "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
+
+
+def scientific_condition_light(rows: list[dict], today: dt.date,
+                               current_level: object, current_weather: dict,
+                               levels: dict, weather_details: dict,
+                               season_monthly: dict[int, int] | None,
+                               planned_time: str, planned_method: str,
+                               temperature_estimate: dict | None = None) -> dict:
+    """Experimental salmon-condition index with explicit evidence and confidence."""
+    level = finite_number(current_level)
+    pressure = finite_number(current_weather.get("pressure_mb"))
+    air_temp = finite_number(current_weather.get("temp_c"))
+    wind = finite_number(current_weather.get("wind_mph"))
+    group = weather_group(current_weather.get("condition", {}).get("text", ""))
+    prior_rows = [row for row in rows if row["Date"] < today]
+    catches = [(row["Date"], finite_number(row.get("Reported salmon")))
+               for row in prior_rows]
+    catches = [(day, fish) for day, fish in catches if fish is not None]
+    positive = [row for row in prior_rows
+                if (finite_number(row.get("Reported salmon")) or 0) > 0]
+
+    factors = []
+    def add(name: str, weight: int, score: float | None, evidence: str) -> None:
+        factors.append({"Factor": name, "Weight": weight, "Score": score,
+                        "Evidence": evidence})
+
+    if len(catches) >= 2:
+        ordered = sorted(catches)[-5:]
+        weighted = sum(fish * (index + 1) for index, (_, fish) in enumerate(ordered))
+        daily_rate = weighted / sum(range(1, len(ordered) + 1))
+        add("Recent salmon catches", 25, min(1.0, daily_rate / 3.0),
+            f"Recency-weighted {daily_rate:.1f} salmon/day from {len(ordered)} reported days")
+    else:
+        add("Recent salmon catches", 25, None,
+            f"Only {len(catches)} dated salmon report(s)")
+
+    usable_months = {month: count for month, count in (season_monthly or {}).items()
+                     if 1 <= month <= 12 and count is not None and count >= 0}
+    if usable_months and max(usable_months.values()) > 0:
+        month_count = usable_months.get(today.month)
+        season_score = (month_count / max(usable_months.values())
+                        if month_count is not None else None)
+        add("Season", 15, season_score,
+            (f"Month has {month_count} archived salmon; peak month has "
+             f"{max(usable_months.values())}" if month_count is not None
+             else "No archive value for this month"))
+    else:
+        add("Season", 15, None, "No monthly salmon archive loaded for this selection")
+
+    good_levels = [finite_number(row.get("Water level (m)")) for row in positive]
+    good_levels = [value for value in good_levels if value is not None]
+    if level is not None and len(good_levels) >= 2:
+        centre = median(good_levels)
+        add("River level", 15, _closeness(level, centre, 0.08, 0.35),
+            f"{level:.2f} m now; successful-day median {centre:.2f} m")
+    else:
+        add("River level", 15, None,
+            "Needs a fresh gauge and at least two successful days with levels")
+
+    dated_levels = sorted((day, finite_number(value)) for day, value in levels.items()
+                          if day < today and finite_number(value) is not None)
+    if level is not None and dated_levels:
+        earlier = dated_levels[-1][1]
+        change = level - earlier
+        trend_score = 1.0 if 0.01 <= change <= 0.25 else 0.65 if -0.05 <= change < 0.01 else 0.35
+        direction = "rising" if change > 0.01 else "falling" if change < -0.01 else "steady"
+        add("River trend", 10, trend_score,
+            f"{direction}; change {change:+.2f} m from latest daily mean")
+    else:
+        add("River trend", 10, None, "Insufficient recent gauge history")
+
+    completed = [weather_details.get(today - dt.timedelta(days=offset), {})
+                 for offset in (1, 2, 3)]
+    rain_values = [finite_number(item.get("rain_mm")) for item in completed]
+    rain_values = [value for value in rain_values if value is not None]
+    if len(rain_values) >= 2:
+        rainfall = sum(rain_values)
+        rain_score = 1.0 if 5 <= rainfall <= 35 else 0.65 if rainfall < 60 else 0.25
+        add("Recent rainfall", 10, rain_score,
+            f"{rainfall:.1f} mm over {len(rain_values)} completed day(s)")
+    else:
+        add("Recent rainfall", 10, None, "Needs at least two completed daily observations")
+
+    estimated_water_temp = finite_number((temperature_estimate or {}).get("value"))
+    air_values = [finite_number(item.get("mean_air_temp_c")) for item in completed]
+    air_values = [value for value in air_values if value is not None]
+    if estimated_water_temp is not None:
+        temp_score = (1.0 if 8 <= estimated_water_temp <= 16 else
+                      0.6 if 4 <= estimated_water_temp < 8 or 16 < estimated_water_temp <= 18 else
+                      0.25 if 0 <= estimated_water_temp <= 20 else 0.0)
+        add("Estimated water temperature", 8, temp_score,
+            f"{estimated_water_temp:.1f}°C model estimate; likely "
+            f"{temperature_estimate['low']:.1f}–{temperature_estimate['high']:.1f}°C "
+            f"({temperature_estimate['confidence'].lower()} confidence)"
+            + ("; warm-water caution" if estimated_water_temp > 16.5 else ""))
+    elif air_values:
+        proxy = sum(air_values) / len(air_values)
+        add("Temperature proxy", 8, _closeness(proxy, 12.0, 4.0, 10.0),
+            f"{proxy:.1f}°C recent mean air temperature; no water sensor configured")
+    elif air_temp is not None:
+        add("Temperature proxy", 8, _closeness(air_temp, 12.0, 4.0, 10.0),
+            f"{air_temp:.1f}°C current air temperature; no water sensor configured")
+    else:
+        add("Water temperature", 8, None, "No water-temperature or air-temperature input")
+
+    good_pressures = [finite_number(row.get("Pressure (hPa)")) for row in positive]
+    good_pressures = [value for value in good_pressures if value is not None]
+    if pressure is not None and len(good_pressures) >= 2:
+        centre = median(good_pressures)
+        add("Air pressure", 5, _closeness(pressure, centre, 4, 15),
+            f"{pressure:.0f} hPa now; successful-day median {centre:.0f} hPa")
+    else:
+        add("Air pressure", 5, None, "Needs pressure and two successful comparison days")
+
+    if group is not None and wind is not None:
+        weather_score = 0.85 if group in {"wet", "cloudy", "misty"} else 0.55
+        wind_score = 1.0 if wind <= 15 else 0.65 if wind <= 25 else 0.25
+        add("Weather and wind", 7, (weather_score + wind_score) / 2,
+            f"{group}; wind {wind:.1f} mph")
+    else:
+        add("Weather and wind", 7, None, "Current weather or wind unavailable")
+
+    matching_times = [_time_group(row.get("Time")) for row in positive]
+    matching_times = [value for value in matching_times if value]
+    if matching_times:
+        common = Counter(matching_times).most_common(1)[0][0]
+        add("Planned time", 3, 1.0 if planned_time.lower() == common else 0.55,
+            f"Most reported successful catches: {common}")
+    else:
+        add("Planned time", 3, None, "Catch times have not been supplied")
+
+    matching_methods = [str(row.get("Method") or "").strip().lower() for row in positive]
+    matching_methods = [value for value in matching_methods if value]
+    if matching_methods:
+        common = Counter(matching_methods).most_common(1)[0][0]
+        add("Planned method", 2, 1.0 if planned_method.lower() in common else 0.55,
+            f"Most reported successful method: {common}")
+    else:
+        add("Planned method", 2, None, "Methods have not been supplied with dated catches")
+
+    available_weight = sum(item["Weight"] for item in factors if item["Score"] is not None)
+    weighted_points = sum(item["Weight"] * item["Score"] for item in factors
+                          if item["Score"] is not None)
+    score = round(100 * weighted_points / available_weight) if available_weight else None
+    coverage = available_weight / sum(item["Weight"] for item in factors)
+    sample_factor = min(1.0, len(catches) / 20)
+    confidence = round(100 * coverage * (0.45 + 0.55 * sample_factor))
+    label = (None if score is None or coverage < 0.45 or len(catches) < 2 else
+             "Excellent" if score >= 72 else "Moderate" if score >= 45 else "Poor")
+    return {"label": label, "score": score, "confidence": confidence,
+            "coverage": round(coverage * 100), "catch_days": len(catches),
+            "factors": factors}
 
 
 class _CatchTableParser(HTMLParser):
@@ -1594,6 +1783,19 @@ BUILTIN_FISHPAL_SNAPSHOTS = {
             "sea_trout": {str(month): value for month, value in enumerate(
                           [0, 1, 0, 0, 0, 1, 6, 3, 8, 13, 0, 0, 0]) if month},
             "last_seven": {"salmon": 26, "sea_trout": 8},
+        },
+    },
+    # These dated salmon bars were successfully read from FishPal before its
+    # Cloudflare change and shown in the app. Sea-trout dates were not supplied,
+    # so they remain unknown rather than being changed to zero.
+    "burnfoot_daily": {
+        "saved_at": "2026-09-12 13:27 UTC",
+        "data": {
+            "2026-09-07": {"salmon": 1, "sea_trout": None},
+            "2026-09-08": {"salmon": 12, "sea_trout": None},
+            "2026-09-09": {"salmon": 4, "sea_trout": None},
+            "2026-09-10": {"salmon": 1, "sea_trout": None},
+            "2026-09-11": {"salmon": 5, "sea_trout": None},
         },
     },
     "tweed_daily": {
@@ -2077,6 +2279,11 @@ if weather_key:
 if view == "Last 7 days":
     today = dt.datetime.now(UK_TIME).date()
     days = tuple(today - dt.timedelta(days=offset) for offset in range(6, -1, -1))
+    # Keep the chart at seven days, but let the condition comparison use ten.
+    # This preserves enough dated observations across a week boundary without
+    # adding clutter to the visible graph.
+    comparison_days = tuple(today - dt.timedelta(days=offset)
+                            for offset in range(9, -1, -1))
     st.divider()
     st.markdown('<p class="river-kicker">Seven-day view</p>', unsafe_allow_html=True)
     st.subheader("Levels, catches & weather")
@@ -2089,19 +2296,21 @@ if view == "Last 7 days":
             station_id, rloi_id = station_lookup[gauge_label]
             if rloi_id == "5207":
                 try:
-                    levels = sepa_canonbie_daily_levels(days)
+                    levels = sepa_canonbie_daily_levels(comparison_days)
                     level_source = "SEPA Canonbie (one source across the seven-day graph)"
                 except Exception:
-                    levels = gauge_daily_levels(station_id, rloi_id, days)
+                    levels = gauge_daily_levels(station_id, rloi_id, comparison_days)
                     level_source = "GOV.UK Canonbie (five-day CSV fallback)"
             else:
-                levels = gauge_daily_levels(station_id, rloi_id, days)
+                levels = gauge_daily_levels(station_id, rloi_id, comparison_days)
         except Exception:
             st.caption("The selected government gauge has no accessible seven-day history right now.")
-    conditions, daily_pressures = {}, {}
+    conditions, daily_pressures, weather_details = {}, {}, {}
     history_ok = False
     if weather_key:
-        conditions, daily_pressures, history_ok = weather_daily_history(weather_key, location, days)
+        conditions, daily_pressures, weather_details, history_ok = weather_daily_history(
+            weather_key, location, comparison_days
+        )
     if weather and weather.get("current", {}).get("condition", {}).get("text"):
         conditions[today] = "Now: " + weather["current"]["condition"]["text"]
         daily_pressures[today] = finite_number(weather["current"].get("pressure_mb"))
@@ -2115,9 +2324,11 @@ if view == "Last 7 days":
     if fishpal_partner_id:
         try:
             api_rows, fishpal_retrieved = speedybooker_catches(
-                fishpal_partner_id, days[0], days[-1]
+                fishpal_partner_id, comparison_days[0], comparison_days[-1]
             )
-            fishpal_daily = api_catches_for_selection(api_rows, river, beat, days)
+            fishpal_daily = api_catches_for_selection(
+                api_rows, river, beat, comparison_days
+            )
             fishpal_api_used = bool(fishpal_daily)
         except Exception as exc:
             fishpal_api_error = str(exc)
@@ -2254,7 +2465,7 @@ if view == "Last 7 days":
                      f"FishPal · Tweed · {beat}")
                     if use_fishpal_daily else "Permissioned dated reports")
     rows = []
-    for day in days:
+    for day in comparison_days:
         matching = daily_uploads[daily_uploads["date"] == day] if len(daily_uploads) else daily_uploads
         daily = (fishpal_daily.get(day, {}) if use_fishpal_daily else
                  {"salmon": int(matching["salmon"].sum()),
@@ -2274,17 +2485,30 @@ if view == "Last 7 days":
                      "Pressure (hPa)": day_pressure,
                      "Reported salmon": daily.get("salmon"),
                      "Reported sea trout": daily.get("sea_trout"),
+                     "Time": (Counter(str(value).strip() for value in matching["time"]
+                                      if str(value).strip()).most_common(1)[0][0]
+                              if not use_fishpal_daily and len(matching)
+                              and any(str(value).strip() for value in matching["time"])
+                              else None),
+                     "Method": (Counter(str(value).strip() for value in matching["method"]
+                                        if str(value).strip()).most_common(1)[0][0]
+                                if not use_fishpal_daily and len(matching)
+                                and any(str(value).strip() for value in matching["method"])
+                                else None),
                      "Weather": day_weather or "Not available",
                      "Weather icon": weather_icon(day_weather or "Not available")})
-    seven = pd.DataFrame(rows)
+    seven = pd.DataFrame([row for row in rows if row["Date"] in days])
     if beat == "All beats" and use_fishpal_daily:
         light_scope = ("Burnfoot only" if river == "Border Esk" and not fishpal_api_used
                        else river)
     else:
         light_scope = beat
     with traffic_light_slot.container():
-        st.markdown("#### Today's indicative conditions")
-        st.caption(f"Comparison scope: {light_scope}. This is not a catch forecast or a safety rating.")
+        st.markdown("#### Today's salmon condition light")
+        st.caption(f"Experimental comparison scope: {light_scope}. This is not a catch forecast or a safety rating.")
+        if fishpal_fallback and river == "Border Esk":
+            st.caption("Catch-day baseline: saved FishPal Burnfoot weekday table, "
+                       f"retrieved {fishpal_retrieved}. Missing species/dates remain unknown.")
         if beat == "All beats" and not use_fishpal_daily:
             st.info("⚪ Select a beat to compare today's conditions with its recent catch days. "
                     "An all-beats selection may contain incomplete beat coverage.")
@@ -2293,26 +2517,77 @@ if view == "Last 7 days":
             updated_epoch = finite_number(current_condition.get("last_updated_epoch"))
             weather_fresh = (updated_epoch is not None and
                              0 <= dt.datetime.now(dt.timezone.utc).timestamp() - updated_epoch <= 6 * 3600)
-            label, explanation = catch_condition_light(
-                rows, today, current_level_m,
-                current_condition.get("condition", {}).get("text", "") if weather_fresh else "",
-                current_condition.get("pressure_mb") if weather_fresh else None,
+            temperature_estimate = estimate_water_temperature(
+                today, current_condition if weather_fresh else {},
+                weather_details, levels, current_level_m,
             )
+            temp_col, plan_a, plan_b = st.columns(3)
+            if temperature_estimate:
+                temp_col.metric("Estimated river temperature",
+                                f"{temperature_estimate['value']:.1f} °C")
+                temp_col.caption(
+                    f"Likely {temperature_estimate['low']:.1f}–"
+                    f"{temperature_estimate['high']:.1f} °C · "
+                    f"{temperature_estimate['confidence']} confidence · not measured")
+            else:
+                temp_col.metric("Estimated river temperature", "Unavailable")
+                temp_col.caption("Recent air-temperature observations are required.")
+            planned_time = plan_a.selectbox(
+                "Planned fishing time", ["Dawn", "Morning", "Afternoon", "Evening"],
+                index=1, key=f"condition_time_{river}_{beat}")
+            method_options = (["Fly", "Spinner", "Worm", "Prawn"]
+                              if river == "Border Esk" and beat in {"All beats", "Burnfoot"}
+                              else ["Fly", "Spinner", "Other"])
+            planned_method = plan_b.selectbox(
+                "Planned method", method_options,
+                key=f"condition_method_{river}_{beat}")
+            if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
+                snapshot = BUILTIN_FISHPAL_SNAPSHOTS["burnfoot_season_2026"]["data"]
+                season_monthly = {int(month): int(value)
+                                  for month, value in snapshot["salmon"].items()}
+                season_source = "Burnfoot saved monthly catch archive (2026)"
+            else:
+                season_monthly = None
+                season_source = "No river monthly archive loaded into this live view"
+            result = scientific_condition_light(
+                rows, today, current_level_m,
+                current_condition if weather_fresh else {},
+                levels, weather_details, season_monthly,
+                planned_time, planned_method, temperature_estimate,
+            )
+            label = result["label"]
             if label:
                 lights = {"Excellent": "🟢", "Moderate": "🟠", "Poor": "🔴"}
-                st.markdown(f"### {lights[label]} {label} match")
+                st.markdown(f"### {lights[label]} {label} conditions · {result['score']}/100")
             else:
                 st.info("⚪ Not enough data for a traffic-light rating")
-            st.caption(explanation)
+            st.caption(f"Confidence {result['confidence']}% · usable factor coverage "
+                       f"{result['coverage']}% · {result['catch_days']} dated catch day(s). "
+                       + season_source + ".")
         with st.expander("How the traffic light is calculated"):
-            st.write("An experimental 0–8 point comparison for the selected beat: up to two points "
-                     "each for recent dated catches, today's gauge level compared with "
-                     "successful days, the broad weather category and air pressure compared "
-                     "with successful days. Green is 7–8, amber is 4–6, red is 0–3. "
-                     "At least four complete prior days, including two days with fish, are required. "
-                     "Past weather and pressure are daily observations near the river, not "
-                     "measurements at the exact time or place a fish was caught. "
-                     "The rule has not been scientifically validated and must not be used for safety decisions.")
+            if beat != "All beats" or use_fishpal_daily:
+                factor_rows = []
+                for factor in result["factors"]:
+                    factor_rows.append({
+                        "Factor": factor["Factor"],
+                        "Weight": f"{factor['Weight']}%",
+                        "Factor result": (f"{round(100 * factor['Score'])}/100"
+                                          if factor["Score"] is not None else "Unavailable"),
+                        "Evidence used": factor["Evidence"],
+                    })
+                st.dataframe(pd.DataFrame(factor_rows), hide_index=True,
+                             use_container_width=True)
+            st.write("The score combines daily salmon catches (25%), season (15%), river "
+                     "level (15%), level trend (10%), recent rainfall (10%), temperature "
+                     "proxy (8%), weather and wind (7%), pressure (5%), planned time (3%) "
+                     "and method (2%). Green is 72–100, amber is 45–71 and red is below 45. "
+                     "Unavailable factors reduce confidence and are not scored as zero. A grey "
+                     "light is shown when coverage or dated catches are insufficient.")
+            st.warning("This is a transparent experimental index, not a scientifically validated "
+                       "probability of catching a salmon. The EA monthly archive is river-wide; "
+                       "saved FishPal figures and uploaded reports may be incomplete. River "
+                       "temperature is estimated from recent and seasonal air temperatures; its "
+                       "displayed range is not a sensor measurement.")
     plots = []
     # A categorical day axis gives exactly seven positions; a temporal axis
     # inserted several ticks per day and repeated the same formatted date.
