@@ -884,7 +884,7 @@ def render_method_guide(river: str, beat: str) -> None:
     if river != "Border Esk" or beat not in {"All beats", "Burnfoot"}:
         return
 
-    with st.expander("🎣 Burnfoot session advice: time & method", expanded=False):
+    with st.expander("🎣 Burnfoot session advice: time & known methods", expanded=True):
         st.caption(
             "These choices change the advice below, not the traffic light. The light "
             "rates river and weather conditions only."
@@ -2222,7 +2222,6 @@ else:
 traffic_light_slot = st.empty() if view == "Last 7 days" else None
 
 render_tide_panel(river, beat)
-render_method_guide(river, beat)
 
 if view == "Last 7 days":
     st.markdown("#### Weather over the next few days")
@@ -2581,6 +2580,7 @@ if view == "Last 7 days":
                        "saved FishPal figures and uploaded reports may be incomplete. River "
                        "temperature is estimated from recent and seasonal air temperatures; its "
                        "displayed range is not a sensor measurement.")
+    render_method_guide(river, beat)
     plots = []
     # A categorical day axis gives exactly seven positions; a temporal axis
     # inserted several ticks per day and repeated the same formatted date.
