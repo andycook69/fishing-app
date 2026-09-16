@@ -20,7 +20,7 @@ Data: EA annual declared rod catches (2008–2024, 2024 workbook);
 EA 2024 monthly rod catches and estimated grilse; EA gauge readings;
 WeatherAPI current conditions and forecasts; Environment Agency live tide gauges;
 Open-Meteo modelled tide fallback for private non-commercial testing;
-private-test Burnfoot FishPal monthly figures;
+private-test Burnfoot and Tweed FishPal figures;
 optional *permissioned* current-year CSV.
 This app has no subscriber authentication or payment integration.
 """
@@ -152,6 +152,7 @@ EA_TIDE_API = "https://environment.data.gov.uk/flood-monitoring"
 OPEN_METEO_MARINE_API = "https://marine-api.open-meteo.com/v1/marine"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 FISHPAL_BORDER_ESK_DAILY = "https://www.fishpal.com/scotland/borderesk/catches.html"
+FISHPAL_TWEED_DAILY = "https://www.fishpal.com/scotland/tweed/catches.html"
 UK_TIME = ZoneInfo("Europe/London")
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 # These RLOI IDs are checked against their individual government station pages.
@@ -166,6 +167,7 @@ RIVERS = {
     "Border Esk": ("Esk Border", "Canonbie, UK"),
     "Yorkshire Esk": ("Esk Yorkshire", "Whitby, UK"),
     "Cumbrian Esk": ("Esk Cumbrian", "Ravenglass, UK"),
+    "Tweed": ("Tweed", "Kelso, UK"),
     "Tyne": ("Tyne", "Hexham, UK"),
     "Wear": ("Wear", "Durham, UK"),
     "Coquet": ("Coquet", "Rothbury, UK"),
@@ -187,6 +189,7 @@ TIDE_REFERENCES = {
     "Border Esk": ("Solway Firth near the Border Esk mouth", 54.983, -3.020),
     "Yorkshire Esk": ("Whitby Harbour", 54.490, -0.614),
     "Cumbrian Esk": ("Ravenglass estuary", 54.353, -3.408),
+    "Tweed": ("Berwick-upon-Tweed / River Tweed mouth", 55.770, -1.985),
     "Tyne": ("Tynemouth / River Tyne mouth", 55.010, -1.421),
     "Wear": ("Sunderland / River Wear mouth", 54.916, -1.355),
     "Coquet": ("Amble Harbour / River Coquet mouth", 55.333, -1.575),
@@ -205,6 +208,9 @@ TIDE_REFERENCES = {
 # beat names for their own river. Do not infer beat totals from river data.
 KNOWN_BEATS = {
     "Border Esk": ("Burnfoot",),
+    # The Tweed menu is supplemented from the named beats in FishPal's live
+    # current-week table, so it can follow the report without a code release.
+    "Tweed": (),
     "Tyne": (
         "Bywell", "Styford", "Warden Fishing", "Dilston",
         "Haughton Castle", "Chipchase Castle", "Chesters",
@@ -1334,6 +1340,107 @@ def burnfoot_daily_catches(today: dt.date) -> tuple[dict, str]:
     return parse_burnfoot_weekdays(html, today), fetched_at
 
 
+class _FishPalRiverWeekParser(HTMLParser):
+    """Read current-week river totals and named-beat counts from FishPal."""
+
+    weekdays = set(WEEKDAY_NAMES)
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.current_week = False
+        self.day = None
+        self.row = None
+        self.cell = None
+        self.daily_totals = {}
+        self.daily_beats = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.row = []
+        elif tag in {"td", "th"} and self.row is not None:
+            self.cell = []
+
+    def handle_data(self, data):
+        text = " ".join(data.split())
+        lower = text.lower()
+        if "for the current week" in lower:
+            self.current_week = True
+        if "week so far" in lower or "last week" in lower:
+            self.current_week = False
+        if self.current_week and lower in self.weekdays:
+            self.day = lower
+        if self.cell is not None:
+            self.cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in {"td", "th"} and self.cell is not None:
+            self.row.append(" ".join(" ".join(self.cell).split()))
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            if self.current_week and self.day:
+                cells = [value for value in self.row
+                         if value.strip().lower() not in self.weekdays]
+                if len(cells) >= 2:
+                    species_cells = cells[-2:]
+                    for species, value in zip(("salmon", "sea_trout"), species_cells):
+                        total = re.search(r"\bTotal\s*:\s*([0-9,]+)\b", value, re.I)
+                        if total:
+                            self.daily_totals.setdefault(self.day, {})[species] = int(
+                                total.group(1).replace(",", "")
+                            )
+                        before_total = re.split(r"\bTotal\s*:", value, maxsplit=1,
+                                                flags=re.I)[0]
+                        for match in re.finditer(
+                            r"([A-Za-z][A-Za-z0-9 '&()./]*?)\s*[-–]\s*([0-9,]+)(?=\s|$)",
+                            before_total,
+                        ):
+                            beat_name = " ".join(match.group(1).split()).strip()
+                            if not beat_name:
+                                continue
+                            count_value = int(match.group(2).replace(",", ""))
+                            day_beats = self.daily_beats.setdefault(self.day, {})
+                            beat_counts = day_beats.setdefault(beat_name, {})
+                            if species in beat_counts:
+                                raise ValueError("Duplicate FishPal beat catch entry")
+                            beat_counts[species] = count_value
+            self.row = None
+
+
+def parse_fishpal_river_week(html: str, today: dt.date) -> dict:
+    parser = _FishPalRiverWeekParser()
+    parser.feed(html)
+    if not parser.daily_totals:
+        raise ValueError("FishPal current-week river table could not be read")
+    week_start = today - dt.timedelta(days=today.weekday())
+    daily_totals = {}
+    daily_beats = {}
+    beat_names = set()
+    for day_name, totals in parser.daily_totals.items():
+        day = week_start + dt.timedelta(days=WEEKDAY_NAMES.index(day_name))
+        if day > today:
+            continue
+        daily_totals[day] = {species: int(totals.get(species, 0))
+                             for species in ("salmon", "sea_trout")}
+        beat_rows = parser.daily_beats.get(day_name, {})
+        daily_beats[day] = {}
+        for beat_name, counts in beat_rows.items():
+            beat_names.add(beat_name)
+            daily_beats[day][beat_name] = {
+                species: int(counts.get(species, 0))
+                for species in ("salmon", "sea_trout")
+            }
+    return {"daily_totals": daily_totals,
+            "daily_beats": daily_beats,
+            "beat_names": sorted(beat_names, key=str.casefold)}
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def tweed_daily_catches(today: dt.date) -> tuple[dict, str]:
+    html = get_bytes(FISHPAL_TWEED_DAILY, timeout=20).decode("utf-8", errors="replace")
+    fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return parse_fishpal_river_week(html, today), fetched_at
+
+
 def clean_reports(upload, selected_year: int) -> tuple[pd.DataFrame, list[str]]:
     columns = [
         "report_id", "date", "river", "beat", "salmon", "grilse", "sea_trout",
@@ -1443,10 +1550,22 @@ if upload is None:
     except ValueError as exc:
         saved_error = str(exc)
 reports, report_problems = clean_reports(upload, CURRENT_YEAR)
+tweed_feed = {}
+tweed_feed_retrieved = ""
+tweed_feed_error = ""
+if river == "Tweed":
+    try:
+        tweed_feed, tweed_feed_retrieved = tweed_daily_catches(
+            dt.datetime.now(UK_TIME).date()
+        )
+    except Exception as exc:
+        tweed_feed_error = str(exc)
 with beat_slot:
     uploaded_beats = (set(reports.loc[reports["river"] == river, "beat"]) - {""}
                       if len(reports) else set())
-    beat_options = sorted(set(KNOWN_BEATS.get(river, ())) | uploaded_beats,
+    live_fishpal_beats = set(tweed_feed.get("beat_names", ()))
+    beat_options = sorted(set(KNOWN_BEATS.get(river, ())) | uploaded_beats
+                          | live_fishpal_beats,
                           key=str.casefold)
     beat = st.selectbox("Beat", ["All beats", *beat_options],
                         key=f"selected_beat_{river}")
@@ -1458,6 +1577,13 @@ with beat_slot:
         with st.expander("About Border Esk beats"):
             st.caption("[Browse FishPal's Border Esk listings](https://www.fishpal.com/search/in/Border%20Esk) "
                        "for reference; they are not imported into this app.")
+    elif river == "Tweed":
+        if tweed_feed_error:
+            st.caption("FishPal's Tweed beat list is temporarily unavailable: "
+                       + tweed_feed_error)
+        else:
+            st.caption("Named beats are taken from FishPal's current-week Tweed "
+                       "catch table and may change as reports are added.")
 
 burnfoot_photo = Path(__file__).with_name("burnfoot_header.jpg")
 illustrative_banner = Path(__file__).with_name("salmon_river_banner.png")
@@ -1767,12 +1893,41 @@ if view == "Last 7 days":
         except Exception:
             st.warning("FishPal's weekday catches are temporarily unavailable; "
                        "only dated CSV reports can appear as daily bars.")
+    elif river == "Tweed":
+        fishpal_retrieved = tweed_feed_retrieved
+        if tweed_feed:
+            if beat == "All beats":
+                fishpal_daily = tweed_feed.get("daily_totals", {})
+            else:
+                fishpal_daily = {
+                    day: tweed_feed.get("daily_beats", {}).get(day, {}).get(
+                        beat, {"salmon": 0, "sea_trout": 0}
+                    )
+                    for day in tweed_feed.get("daily_totals", {})
+                }
+            tweed_salmon = sum(value.get("salmon", 0)
+                               for value in fishpal_daily.values())
+            tweed_trout = sum(value.get("sea_trout", 0)
+                              for value in fishpal_daily.values())
+            salmon_card, trout_card = st.columns(2)
+            scope_name = "River Tweed" if beat == "All beats" else beat
+            salmon_card.metric(f"{scope_name} salmon · week so far (FishPal)",
+                               tweed_salmon)
+            trout_card.metric(f"{scope_name} sea trout · week so far (FishPal)",
+                              tweed_trout)
+        else:
+            st.warning("FishPal's Tweed current-week catches are temporarily unavailable; "
+                       "only dated CSV reports can appear as daily bars."
+                       + (" " + tweed_feed_error if tweed_feed_error else ""))
 
     daily_uploads = reports[reports["river"] == river].copy() if len(reports) else reports.copy()
     if beat != "All beats" and len(daily_uploads):
         daily_uploads = daily_uploads[daily_uploads["beat"] == beat]
     use_fishpal_daily = bool(fishpal_daily)
-    catch_source = "FishPal · Burnfoot only" if use_fishpal_daily else "Permissioned dated reports"
+    catch_source = (("FishPal · Burnfoot only" if river == "Border Esk" else
+                     "FishPal · Tweed river" if beat == "All beats" else
+                     f"FishPal · Tweed · {beat}")
+                    if use_fishpal_daily else "Permissioned dated reports")
     rows = []
     for day in days:
         matching = daily_uploads[daily_uploads["date"] == day] if len(daily_uploads) else daily_uploads
@@ -1879,14 +2034,20 @@ if view == "Last 7 days":
                    "licensed under the Open Government Licence v3.0.")
     if not levels:
         st.info("No daily water levels were available for this gauge. Check the gauge selection or its government feed.")
-    if use_fishpal_daily:
+    if use_fishpal_daily and river == "Border Esk":
         st.caption(f"[Daily Burnfoot catches on FishPal]({FISHPAL_BORDER_ESK_DAILY}) · "
                    f"page retrieved {fishpal_retrieved}. The weekday table covers the current week only; "
                    "days from last week are unknown without a saved dated catch log. "
                    "These bars are Burnfoot-only, even when 'All beats' is selected, and are not added to CSV counts.")
+    elif use_fishpal_daily and river == "Tweed":
+        scope_text = ("the whole River Tweed" if beat == "All beats" else beat)
+        st.caption(f"[Daily Tweed catches on FishPal]({FISHPAL_TWEED_DAILY}) · "
+                   f"page retrieved {fishpal_retrieved}. The bars cover {scope_text} "
+                   "for the current FishPal week only; days from last week remain unknown. "
+                   "FishPal figures are kept separate from uploaded CSV and official archive totals.")
     elif not len(daily_uploads):
-        st.info("No dated catches are loaded for this river/beat. Only Burnfoot has a separate "
-                "test catch feed; other beats need permissioned catch_reports.csv records "
+        st.info("No dated catches are loaded for this river/beat. Burnfoot and Tweed have separate "
+                "private-test FishPal feeds; other rivers and beats need permissioned catch_reports.csv records "
                 "or a sidebar CSV upload. River-wide EA totals are on the history page.")
     elif not seven["Reported salmon"].notna().any():
         st.info("No dated catches were reported for this beat in the past seven days. "
@@ -1908,7 +2069,7 @@ st.subheader(f"Official declared rod catches · {selected_year} · {river}")
 if beat != "All beats":
     st.info(f"These {selected_year} Environment Agency figures are for the whole {river}, "
             f"not {beat}. Beat-specific catches appear below only when dated "
-            "permissioned reports or the separate Burnfoot test feed are available.")
+            "permissioned reports or a separate private-test FishPal feed is available.")
     whole_river = yearly.get((official_name, selected_year), {})
     r1, r2 = st.columns(2)
     r1.metric("River-wide salmon", metric_or_dash(whole_river.get("salmon")))
@@ -1997,6 +2158,43 @@ if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
         st.warning("Burnfoot FishPal catch data are unavailable right now; no figures "
                    "have been inferred from a previous snapshot. " + str(exc))
     st.divider()
+elif river == "Tweed":
+    st.subheader(f"River Tweed · current-week FishPal catches (private test)")
+    st.caption("Current-week FishPal reports only. These figures are separate from "
+               "official archive totals and uploaded permissioned reports.")
+    if tweed_feed:
+        if beat == "All beats":
+            selected_tweed_daily = tweed_feed.get("daily_totals", {})
+            scope_name = "River Tweed"
+        else:
+            selected_tweed_daily = {
+                day: tweed_feed.get("daily_beats", {}).get(day, {}).get(
+                    beat, {"salmon": 0, "sea_trout": 0}
+                )
+                for day in tweed_feed.get("daily_totals", {})
+            }
+            scope_name = beat
+        tweed_rows = [
+            {"Date": day, "Salmon": counts.get("salmon", 0),
+             "Sea trout": counts.get("sea_trout", 0)}
+            for day, counts in sorted(selected_tweed_daily.items())
+        ]
+        salmon_total = sum(row["Salmon"] for row in tweed_rows)
+        trout_total = sum(row["Sea trout"] for row in tweed_rows)
+        salmon_col, trout_col = st.columns(2)
+        salmon_col.metric(f"{scope_name} salmon · week so far", salmon_total)
+        trout_col.metric(f"{scope_name} sea trout · week so far", trout_total)
+        if tweed_rows:
+            tweed_frame = pd.DataFrame(tweed_rows)
+            st.bar_chart(tweed_frame.set_index("Date")[["Salmon", "Sea trout"]])
+            st.dataframe(tweed_frame, hide_index=True, use_container_width=True)
+        st.caption(f"[Daily Tweed catches on FishPal]({FISHPAL_TWEED_DAILY}) · "
+                   f"page retrieved {tweed_feed_retrieved}; refreshes at most hourly. "
+                   "A missing previous-week day remains unknown rather than zero.")
+    else:
+        st.warning("Tweed FishPal catch data are unavailable right now; no figures "
+                   "have been inferred from a previous snapshot. " + tweed_feed_error)
+    st.divider()
 st.subheader(f"Permissioned reports · 1 January–today {CURRENT_YEAR}")
 if len(reports):
     filtered = reports[reports["river"] == river].copy()
@@ -2044,8 +2242,8 @@ with st.expander("CSV format, provenance and commercial launch notes"):
     st.write("One unique report_id per catch record; date must be YYYY-MM-DD. Salmon includes grilse."
              " A sidebar upload is session-only; catch_reports.csv beside the app loads on restart. "
              "Neither updates a shared database. Zero means an explicitly reported zero, not missing data.")
-    st.write("The Burnfoot FishPal feed is for private testing only; confirm FishPal access rights "
-             "or arrange a direct Burnfoot feed before public/commercial launch. Before charging subscribers,"
+    st.write("The Burnfoot and Tweed FishPal feeds are for private testing only; confirm FishPal access rights "
+             "or arrange direct permissioned feeds before public/commercial launch. Before charging subscribers,"
              " add server-side sign-in, verified payment entitlements, durable permissioned reports and a privacy policy."
              " This file intentionally contains no pretend paywall.")
     st.write("SEPA provides Canonbie time-series data under the Open Government Licence; "
