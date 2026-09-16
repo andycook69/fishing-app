@@ -380,6 +380,42 @@ BURNFOOT_TIME_GUIDE = {
     ),
 }
 
+# FishPal's public Tweed tackle guide names the first four as widely used
+# patterns. Red Francis is also repeatedly recommended in public Tweed guides.
+# These are starting suggestions, not evidence that one pattern caused a catch.
+TWEED_FLY_GUIDE = {
+    "Junction Shrimp": {
+        "conditions": "A recognised Tweed favourite and a useful general starting pattern.",
+        "presentation": "Match the fly size and line density to the flow, depth and clarity of the selected pool.",
+        "source": "FishPal Tweed tackle and flies",
+    },
+    "Willie Gunn": {
+        "conditions": "Often considered when colder, higher or more coloured water calls for a stronger profile.",
+        "presentation": "Use a larger or heavier dressing only when the water requires it; reduce size as the river clears or warms.",
+        "source": "FishPal Tweed tackle and flies",
+    },
+    "Ally's Shrimp": {
+        "conditions": "A widely used salmon pattern and a practical all-round Tweed option.",
+        "presentation": "Fish it across and down at a controlled depth and pace, changing presentation before repeatedly changing pattern.",
+        "source": "FishPal Tweed tackle and flies",
+    },
+    "Cascade Shrimp": {
+        "conditions": "A widely used Tweed shrimp pattern that can be adapted across a range of normal flows.",
+        "presentation": "Select hook or tube size for the water and follow the selected beat's hook rules.",
+        "source": "FishPal Tweed tackle and flies",
+    },
+    "Red Francis": {
+        "conditions": "A public Tweed guide suggests this pattern particularly as a cold or higher-water option.",
+        "presentation": "Choose a legal dressing and suitable line so the fly fishes at the intended depth without adding prohibited external weight.",
+        "source": "Public River Tweed fly guidance",
+    },
+}
+TWEED_ANGLING_CODE = (
+    "https://rivertweed.org.uk/media/lmhlwgec/"
+    "river-tweed-commission-tweed-salmon-revised-2025-ag.pdf"
+)
+TWEED_FISHPAL_FLIES = "https://www.fishpal.com/scotland/tweed/tackleandflies.html"
+
 
 def get_bytes(url: str, timeout: int = 8) -> bytes:
     request = Request(url, headers={"User-Agent": "NorthernSalmonDashboard/1.0"})
@@ -879,8 +915,58 @@ def render_tide_panel(river: str, beat: str) -> None:
         st.rerun()
 
 
+def render_tweed_fly_guide(beat: str) -> None:
+    """Render Tweed fly-only advice without implying beat-wide permission."""
+    today = dt.datetime.now(UK_TIME).date()
+    with st.expander("🎣 Tweed fly guide & session advice", expanded=True):
+        st.caption(
+            "Fly-pattern guidance for " + ("the selected Tweed beat" if beat != "All beats"
+                                            else "the River Tweed")
+            + ". This changes the advice below, not the traffic-light score."
+        )
+        if today.weekday() == 6:
+            st.error("No salmon fishing on Sundays under the Tweed angling code.")
+        elif not (dt.date(today.year, 2, 1) <= today <= dt.date(today.year, 11, 30)):
+            st.error("Outside the Tweed salmon season of 1 February–30 November.")
+        elif today < dt.date(today.year, 2, 15) or today > dt.date(today.year, 9, 14):
+            st.success("Artificial fly only today under the Tweed angling code.")
+        else:
+            st.success("Selected method: artificial fly. This panel treats Tweed waters as fly-only.")
+
+        time_col, fly_col = st.columns(2)
+        planned_time = time_col.selectbox(
+            "Planned fishing time", list(BURNFOOT_TIME_GUIDE), index=1,
+            key=f"tweed_session_time_{beat}",
+        )
+        selected_fly = fly_col.selectbox(
+            "Tweed favourite fly", list(TWEED_FLY_GUIDE),
+            key=f"tweed_fly_{beat}",
+        )
+        st.info(BURNFOOT_TIME_GUIDE[planned_time])
+        guide = TWEED_FLY_GUIDE[selected_fly]
+        conditions_col, presentation_col = st.columns(2)
+        conditions_col.markdown("**When it may suit**")
+        conditions_col.write(guide["conditions"])
+        presentation_col.markdown("**How to approach it**")
+        presentation_col.write(guide["presentation"])
+        st.caption("Pattern source: " + guide["source"]
+                   + ". Pattern suggestions are not Tweed catch statistics.")
+        st.warning(
+            "Tweed is total catch-and-release. Worms and real or artificial prawns/"
+            "shrimps must not be used. Individual beats may impose additional rules; "
+            "check the permit and speak to the boatman or beat before fishing."
+        )
+        st.markdown(
+            f"[River Tweed Commission salmon code]({TWEED_ANGLING_CODE}) · "
+            f"[FishPal Tweed tackle and flies]({TWEED_FISHPAL_FLIES})"
+        )
+
+
 def render_method_guide(river: str, beat: str) -> None:
     """Show separate session-planning guidance where local detail is available."""
+    if river == "Tweed":
+        render_tweed_fly_guide(beat)
+        return
     if river != "Border Esk" or beat not in {"All beats", "Burnfoot"}:
         return
 
