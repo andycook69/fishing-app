@@ -12,6 +12,8 @@ banner. If you later have an authorised actual Burnfoot photograph, put it at
 burnfoot_header.jpg beside app.py to use it on the Border Esk view instead.
 Optional live weather: set WEATHER_API_KEY in Streamlit deployment secrets
 or as a server-side environment variable. Never put the key in GitHub.
+Optional authorised FishPal feed: set FISHPAL_PARTNER_ID in Streamlit secrets.
+FishPal/SpeedyBooker must issue this identifier; do not commit it to GitHub.
 Optional dated beat catches: put a permissioned catch_reports.csv alongside
 this .py file in GitHub, or upload one using the sidebar. The upload takes
 precedence for that session. Beat names from that file appear under each river.
@@ -155,6 +157,7 @@ OPEN_METEO_MARINE_API = "https://marine-api.open-meteo.com/v1/marine"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 FISHPAL_BORDER_ESK_DAILY = "https://www.fishpal.com/scotland/borderesk/catches.html"
 FISHPAL_TWEED_DAILY = "https://www.fishpal.com/scotland/tweed/catches.html"
+FISHPAL_API = "https://sbapi.speedybooker.com/api/2.4/catchesjson"
 FISHPAL_SNAPSHOT_FILE = Path(__file__).with_name("fishpal_last_success.json")
 UK_TIME = ZoneInfo("Europe/London")
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -206,6 +209,35 @@ TIDE_REFERENCES = {
     "Irt": ("Ravenglass estuary", 54.353, -3.408),
     "Kent": ("Arnside / Kent estuary", 54.201, -2.836),
     "Leven": ("Greenodd / Leven estuary", 54.236, -3.060),
+}
+# FishPal reports several Cumbrian rivers as one area. These mappings are used
+# only for explicitly labelled river-summary cards, never as beat/river totals.
+FISHPAL_AREA_MAP = {
+    "Border Esk": "Border Esk",
+    "Tweed": "Tweed",
+    "Tyne": "Tyne",
+    "Cumbrian Esk": "Cumbria",
+    "Eden": "Cumbria",
+    "Derwent": "Cumbria",
+    "Ehen": "Cumbria",
+    "Irt": "Cumbria",
+    "Kent": "Cumbria",
+    "Leven": "Cumbria",
+}
+# Dated safety net from FishPal's public all-rivers catch summary. It is not
+# called live and must remain visibly timestamped in the interface.
+FISHPAL_PUBLIC_SUMMARY = {
+    "retrieved_at": "2026-09-16 13:35 UTC",
+    "areas": {
+        "Border Esk": {"week_salmon": 8, "week_sea_trout": 0,
+                       "last_week_salmon": 41, "last_week_sea_trout": 14},
+        "Tweed": {"week_salmon": 26, "week_sea_trout": 0,
+                  "last_week_salmon": 358, "last_week_sea_trout": 51},
+        "Tyne": {"week_salmon": 1, "week_sea_trout": 1,
+                 "last_week_salmon": 46, "last_week_sea_trout": 29},
+        "Cumbria": {"week_salmon": 0, "week_sea_trout": 0,
+                    "last_week_salmon": 4, "last_week_sea_trout": 0},
+    },
 }
 # Verified beats can be listed here; imported catch reports also contribute
 # beat names for their own river. Do not infer beat totals from river data.
@@ -1417,6 +1449,140 @@ def tweed_daily_catches(today: dt.date) -> tuple[dict, str]:
     return parse_fishpal_river_week(html, today), fetched_at
 
 
+def _normalised_keys(record: dict) -> dict:
+    return {re.sub(r"[^a-z0-9]", "", str(key).casefold()): value
+            for key, value in record.items()}
+
+
+def _first_value(record: dict, names: tuple[str, ...]):
+    keyed = _normalised_keys(record)
+    for name in names:
+        value = keyed.get(re.sub(r"[^a-z0-9]", "", name.casefold()))
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _walk_api_records(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_api_records(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_api_records(child)
+
+
+def _api_date(value) -> dt.date | None:
+    if isinstance(value, dt.date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return dt.date.fromisoformat(text[:10])
+    except ValueError:
+        for pattern in ("%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
+            try:
+                return dt.datetime.strptime(text, pattern).date()
+            except ValueError:
+                continue
+    return None
+
+
+def parse_speedybooker_catches(payload) -> list[dict]:
+    """Normalise the documented FishPal API's JSON/string response.
+
+    The API declares a string response rather than a public object schema, so
+    this accepts common field-name variants while rejecting undated records.
+    """
+    while isinstance(payload, str):
+        payload = json.loads(payload)
+    rows = []
+    seen = set()
+    for record in _walk_api_records(payload):
+        catch_date = _api_date(_first_value(
+            record, ("CatchDate", "DateCaught", "Catch_Date", "Date")
+        ))
+        if catch_date is None:
+            continue
+        river_name = str(_first_value(
+            record, ("RiverName", "River", "AreaName", "FranchiseName", "Area")
+        ) or "").strip()
+        beat_name = str(_first_value(
+            record, ("FisheryName", "BeatName", "Beat", "Fishery", "VendorName")
+        ) or "").strip()
+        salmon_value = _first_value(
+            record, ("AtlanticSalmon", "SalmonAndGrilse", "SalmonGrilse", "Salmon")
+        )
+        trout_value = _first_value(record, ("SeaTrout", "Sea_Trout"))
+        species = str(_first_value(record, ("SpeciesName", "Species", "FishType")) or "")
+        quantity = _first_value(record, ("Quantity", "Count", "Number", "Total"))
+        try:
+            salmon = int(float(salmon_value)) if salmon_value not in (None, "") else 0
+            sea_trout = int(float(trout_value)) if trout_value not in (None, "") else 0
+            if salmon_value in (None, "") and trout_value in (None, "") and species:
+                count_value = int(float(quantity if quantity not in (None, "") else 1))
+                if "sea" in species.casefold() and "trout" in species.casefold():
+                    sea_trout = count_value
+                elif "salmon" in species.casefold() or "grilse" in species.casefold():
+                    salmon = count_value
+                else:
+                    continue
+        except (TypeError, ValueError):
+            continue
+        if min(salmon, sea_trout) < 0 or not (river_name or beat_name):
+            continue
+        identity = (catch_date, river_name.casefold(), beat_name.casefold(),
+                    salmon, sea_trout, str(_first_value(record, ("CatchId", "Id")) or ""))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        rows.append({"date": catch_date, "river": river_name, "beat": beat_name,
+                     "salmon": salmon, "sea_trout": sea_trout})
+    if not rows:
+        raise ValueError("The FishPal API returned no recognisable dated catches")
+    return rows
+
+
+@st.cache_data(ttl=30 * 60, show_spinner=False)
+def speedybooker_catches(partner_id: str, start: dt.date,
+                         end: dt.date) -> tuple[list[dict], str]:
+    if not re.fullmatch(r"[0-9]+", str(partner_id).strip()):
+        raise ValueError("FISHPAL_PARTNER_ID must be the numeric ID issued by FishPal")
+    query = urlencode({
+        "startDate": f"{start.isoformat()}T00:00:00Z",
+        "endDate": f"{end.isoformat()}T23:59:59Z",
+    })
+    raw = get_bytes(f"{FISHPAL_API}/{partner_id}?{query}", timeout=8)
+    payload = json.loads(raw.decode("utf-8", errors="replace"))
+    retrieved_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return parse_speedybooker_catches(payload), retrieved_at
+
+
+def api_catches_for_selection(rows: list[dict], river: str, beat: str,
+                              days: tuple[dt.date, ...]) -> dict:
+    official_name = RIVERS[river][0].casefold()
+    accepted_rivers = {river.casefold(), official_name}
+    if river == "Border Esk":
+        accepted_rivers |= {"esk border", "border esk"}
+    selected = []
+    for row in rows:
+        row_river = str(row.get("river", "")).casefold()
+        row_beat = str(row.get("beat", "")).casefold()
+        river_matches = (row_river in accepted_rivers or
+                         any(name in row_river for name in accepted_rivers))
+        beat_matches = beat == "All beats" or row_beat == beat.casefold()
+        if river_matches and beat_matches and row.get("date") in days:
+            selected.append(row)
+    daily = {}
+    for row in selected:
+        counts = daily.setdefault(row["date"], {"salmon": 0, "sea_trout": 0})
+        counts["salmon"] += int(row.get("salmon", 0))
+        counts["sea_trout"] += int(row.get("sea_trout", 0))
+    return daily
+
+
 # A dated baseline prevents an empty panel on the first cold start if FishPal
 # blocks a server request. Every fallback is visibly labelled with its age.
 BUILTIN_FISHPAL_SNAPSHOTS = {
@@ -1730,8 +1896,12 @@ if view == "Catch history and reports":
 
 try:
     weather_key = st.secrets.get("WEATHER_API_KEY", os.getenv("WEATHER_API_KEY", ""))
+    fishpal_partner_id = str(st.secrets.get(
+        "FISHPAL_PARTNER_ID", os.getenv("FISHPAL_PARTNER_ID", "")
+    )).strip()
 except (FileNotFoundError, KeyError):
     weather_key = os.getenv("WEATHER_API_KEY", "")
+    fishpal_partner_id = os.getenv("FISHPAL_PARTNER_ID", "").strip()
 weather = None
 weather_error = None
 if weather_key:
@@ -1940,6 +2110,17 @@ if view == "Last 7 days":
     fishpal_daily = {}
     fishpal_retrieved = ""
     fishpal_fallback = False
+    fishpal_api_used = False
+    fishpal_api_error = ""
+    if fishpal_partner_id:
+        try:
+            api_rows, fishpal_retrieved = speedybooker_catches(
+                fishpal_partner_id, days[0], days[-1]
+            )
+            fishpal_daily = api_catches_for_selection(api_rows, river, beat, days)
+            fishpal_api_used = bool(fishpal_daily)
+        except Exception as exc:
+            fishpal_api_error = str(exc)
     if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
         season_status = BURNFOOT_VERIFIED_SEASON.get(CURRENT_YEAR)
         season_card, recent_card = st.columns(2)
@@ -1950,25 +2131,30 @@ if view == "Last 7 days":
             )
         else:
             season_card.metric("Burnfoot salmon · season to date", "Not verified")
-        try:
-            fishpal_week, fishpal_season_retrieved, fishpal_season_fallback = (
-                fishpal_with_fallback(
-                    f"burnfoot_season_{CURRENT_YEAR}",
-                    lambda: burnfoot_catches(CURRENT_YEAR),
+        if fishpal_api_used:
+            recent_card.metric("Burnfoot salmon · last 7 days (FishPal API)",
+                               sum(value.get("salmon", 0)
+                                   for value in fishpal_daily.values()))
+        else:
+            try:
+                fishpal_week, fishpal_season_retrieved, fishpal_season_fallback = (
+                    fishpal_with_fallback(
+                        f"burnfoot_season_{CURRENT_YEAR}",
+                        lambda: burnfoot_catches(CURRENT_YEAR),
+                    )
                 )
-            )
-            recent_counts = fishpal_week.get("last_seven", {})
-            if "salmon" in recent_counts:
-                recent_card.metric("Burnfoot salmon · last 7 days (FishPal)",
-                                   recent_counts["salmon"])
-            else:
+                recent_counts = fishpal_week.get("last_seven", {})
+                if "salmon" in recent_counts:
+                    recent_card.metric("Burnfoot salmon · last 7 days (FishPal)",
+                                       recent_counts["salmon"])
+                else:
+                    recent_card.metric("Burnfoot salmon · last 7 days", "Unavailable")
+                if fishpal_season_fallback:
+                    st.caption("FishPal's live page could not be read; the seven-day card "
+                               f"uses the saved snapshot from {fishpal_season_retrieved}.")
+            except Exception:
                 recent_card.metric("Burnfoot salmon · last 7 days", "Unavailable")
-            if fishpal_season_fallback:
-                st.caption("FishPal's live page could not be read; the seven-day card "
-                           f"uses the saved snapshot from {fishpal_season_retrieved}.")
-        except Exception:
-            recent_card.metric("Burnfoot salmon · last 7 days", "Unavailable")
-            st.warning("Burnfoot's seven-day FishPal total is temporarily unavailable.")
+                st.warning("Burnfoot's seven-day FishPal total is temporarily unavailable.")
         if season_status:
             st.caption(
                 f"Season total verified from [{season_status['source_label']}]"
@@ -1976,31 +2162,34 @@ if view == "Last 7 days":
                 f"{season_status['reported_date']:%d %b %Y}. The 192 total already "
                 "includes grilse; the separate FishPal card covers only the last seven days."
             )
-        try:
-            fishpal_daily, fishpal_retrieved, fishpal_fallback = fishpal_with_fallback(
-                "burnfoot_daily", lambda: burnfoot_daily_catches(today)
-            )
-        except Exception:
-            st.warning("FishPal's weekday catches are temporarily unavailable; "
-                       "only dated CSV reports can appear as daily bars.")
+        if not fishpal_daily:
+            try:
+                fishpal_daily, fishpal_retrieved, fishpal_fallback = fishpal_with_fallback(
+                    "burnfoot_daily", lambda: burnfoot_daily_catches(today)
+                )
+            except Exception:
+                st.warning("FishPal's weekday catches are temporarily unavailable; "
+                           "only dated CSV reports can appear as daily bars.")
     elif river == "Tweed":
-        try:
-            tweed_feed, tweed_feed_retrieved, tweed_feed_fallback = fishpal_with_fallback(
-                "tweed_daily", lambda: tweed_daily_catches(today)
-            )
-        except Exception as exc:
-            tweed_feed_error = str(exc)
-        fishpal_retrieved = tweed_feed_retrieved
-        if tweed_feed:
-            if beat == "All beats":
-                fishpal_daily = tweed_feed.get("daily_totals", {})
-            else:
-                fishpal_daily = {
-                    day: tweed_feed.get("daily_beats", {}).get(day, {}).get(
-                        beat, {"salmon": 0, "sea_trout": 0}
-                    )
-                    for day in tweed_feed.get("daily_totals", {})
-                }
+        if not fishpal_daily:
+            try:
+                tweed_feed, tweed_feed_retrieved, tweed_feed_fallback = fishpal_with_fallback(
+                    "tweed_daily", lambda: tweed_daily_catches(today)
+                )
+            except Exception as exc:
+                tweed_feed_error = str(exc)
+            fishpal_retrieved = tweed_feed_retrieved
+            if tweed_feed:
+                if beat == "All beats":
+                    fishpal_daily = tweed_feed.get("daily_totals", {})
+                else:
+                    fishpal_daily = {
+                        day: tweed_feed.get("daily_beats", {}).get(day, {}).get(
+                            beat, {"salmon": 0, "sea_trout": 0}
+                        )
+                        for day in tweed_feed.get("daily_totals", {})
+                    }
+        if fishpal_daily:
             tweed_salmon = sum(value.get("salmon", 0)
                                for value in fishpal_daily.values())
             tweed_trout = sum(value.get("sea_trout", 0)
@@ -2011,19 +2200,56 @@ if view == "Last 7 days":
                                tweed_salmon)
             trout_card.metric(f"{scope_name} sea trout · week so far (FishPal)",
                               tweed_trout)
-            if tweed_feed_fallback:
+            if tweed_feed_fallback and not fishpal_api_used:
                 st.caption("FishPal's live page could not be read; displaying the "
                            f"saved snapshot from {tweed_feed_retrieved}.")
         else:
             st.warning("FishPal's Tweed current-week catches are temporarily unavailable; "
                        "only dated CSV reports can appear as daily bars."
                        + (" " + tweed_feed_error if tweed_feed_error else ""))
+    elif fishpal_api_used:
+        api_salmon = sum(value.get("salmon", 0) for value in fishpal_daily.values())
+        api_trout = sum(value.get("sea_trout", 0) for value in fishpal_daily.values())
+        api_salmon_col, api_trout_col = st.columns(2)
+        scope_name = river if beat == "All beats" else beat
+        api_salmon_col.metric(f"{scope_name} salmon · last 7 days (FishPal API)",
+                              api_salmon)
+        api_trout_col.metric(f"{scope_name} sea trout · last 7 days (FishPal API)",
+                             api_trout)
+
+    if not fishpal_api_used and river not in {"Border Esk", "Tweed"}:
+        fishpal_area = FISHPAL_AREA_MAP.get(river)
+        summary = FISHPAL_PUBLIC_SUMMARY["areas"].get(fishpal_area, {})
+        summary_date = dt.date.fromisoformat(FISHPAL_PUBLIC_SUMMARY["retrieved_at"][:10])
+        summary_current_week = (summary_date.isocalendar()[:2] == today.isocalendar()[:2])
+        if summary and summary_current_week:
+            st.markdown("#### FishPal river summary")
+            summary_salmon, summary_trout = st.columns(2)
+            summary_salmon.metric(f"{fishpal_area} salmon & grilse · week so far",
+                                  summary["week_salmon"])
+            summary_trout.metric(f"{fishpal_area} sea trout · week so far",
+                                 summary["week_sea_trout"])
+            if fishpal_area == "Cumbria":
+                st.warning("FishPal publishes this as a Cumbria-wide figure. It is not "
+                           f"a total for {river} or the selected beat.")
+            st.caption("Saved public FishPal summary retrieved "
+                       f"{FISHPAL_PUBLIC_SUMMARY['retrieved_at']}; not a live API reading. "
+                       f"Last week: {summary['last_week_salmon']} salmon & grilse and "
+                       f"{summary['last_week_sea_trout']} sea trout.")
+        elif summary:
+            st.info("The saved FishPal river summary is from an earlier week, so its "
+                    "figures are hidden rather than presented as current.")
+    if fishpal_partner_id and fishpal_api_error:
+        st.caption("Authorised FishPal API request unavailable: " + fishpal_api_error)
 
     daily_uploads = reports[reports["river"] == river].copy() if len(reports) else reports.copy()
     if beat != "All beats" and len(daily_uploads):
         daily_uploads = daily_uploads[daily_uploads["beat"] == beat]
     use_fishpal_daily = bool(fishpal_daily)
-    catch_source = (("FishPal · Burnfoot only" if river == "Border Esk" else
+    catch_source = ((f"FishPal API · {river}" +
+                     (f" · {beat}" if beat != "All beats" else "")
+                     if fishpal_api_used else
+                     "FishPal · Burnfoot only" if river == "Border Esk" else
                      "FishPal · Tweed river" if beat == "All beats" else
                      f"FishPal · Tweed · {beat}")
                     if use_fishpal_daily else "Permissioned dated reports")
@@ -2051,7 +2277,11 @@ if view == "Last 7 days":
                      "Weather": day_weather or "Not available",
                      "Weather icon": weather_icon(day_weather or "Not available")})
     seven = pd.DataFrame(rows)
-    light_scope = "Burnfoot only" if beat == "All beats" and use_fishpal_daily else beat
+    if beat == "All beats" and use_fishpal_daily:
+        light_scope = ("Burnfoot only" if river == "Border Esk" and not fishpal_api_used
+                       else river)
+    else:
+        light_scope = beat
     with traffic_light_slot.container():
         st.markdown("#### Today's indicative conditions")
         st.caption(f"Comparison scope: {light_scope}. This is not a catch forecast or a safety rating.")
@@ -2133,7 +2363,13 @@ if view == "Last 7 days":
                    "licensed under the Open Government Licence v3.0.")
     if not levels:
         st.info("No daily water levels were available for this gauge. Check the gauge selection or its government feed.")
-    if use_fishpal_daily and river == "Border Esk":
+    if use_fishpal_daily and fishpal_api_used:
+        st.caption("Authorised [FishPal/SpeedyBooker catch API]"
+                   "(https://sbapi.speedybooker.com/swagger/ui/index) · "
+                   f"retrieved {fishpal_retrieved}. Figures cover the selected "
+                   "river/beat and date range returned by the API and remain separate "
+                   "from uploaded CSV and official archive totals.")
+    elif use_fishpal_daily and river == "Border Esk":
         st.caption(f"[Daily Burnfoot catches on FishPal]({FISHPAL_BORDER_ESK_DAILY}) · "
                    f"page retrieved {fishpal_retrieved}. The weekday table covers the current week only; "
                    "days from last week are unknown without a saved dated catch log. "
