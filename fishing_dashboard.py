@@ -31,10 +31,12 @@ import datetime as dt
 import base64
 import csv
 import io
+import json
 import math
 import os
 import re
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import escape
 from pathlib import Path
 from statistics import median
@@ -153,6 +155,7 @@ OPEN_METEO_MARINE_API = "https://marine-api.open-meteo.com/v1/marine"
 FISHPAL_BURNFOOT = "https://www.fishpal.com/scotland/borderesk/burnfoot/"
 FISHPAL_BORDER_ESK_DAILY = "https://www.fishpal.com/scotland/borderesk/catches.html"
 FISHPAL_TWEED_DAILY = "https://www.fishpal.com/scotland/tweed/catches.html"
+FISHPAL_SNAPSHOT_FILE = Path(__file__).with_name("fishpal_last_success.json")
 UK_TIME = ZoneInfo("Europe/London")
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 # These RLOI IDs are checked against their individual government station pages.
@@ -210,7 +213,11 @@ KNOWN_BEATS = {
     "Border Esk": ("Burnfoot",),
     # The Tweed menu is supplemented from the named beats in FishPal's live
     # current-week table, so it can follow the report without a code release.
-    "Tweed": (),
+    "Tweed": (
+        "Tweedhill", "Horncliffe", "Pedwell", "Ladykirk", "Milne Graden",
+        "West Learmouth", "Lower Birgham", "Birgham Dub", "Upper Makerstoun",
+        "Boleside", "Lower Pavilion",
+    ),
     "Tyne": (
         "Bywell", "Styford", "Warden Fishing", "Dilston",
         "Haughton Castle", "Chipchase Castle", "Chesters",
@@ -323,15 +330,13 @@ BURNFOOT_METHOD_GUIDE = {
 }
 
 
-def get_bytes(url: str, timeout: int = 20) -> bytes:
+def get_bytes(url: str, timeout: int = 8) -> bytes:
     request = Request(url, headers={"User-Agent": "NorthernSalmonDashboard/1.0"})
     with urlopen(request, timeout=timeout) as response:
         return response.read()
 
 
-def get_json(url: str, timeout: int = 12) -> dict:
-    import json
-
+def get_json(url: str, timeout: int = 8) -> dict:
     return json.loads(get_bytes(url, timeout=timeout))
 
 
@@ -421,7 +426,7 @@ def gauges_near(latitude: float, longitude: float) -> list[dict]:
         "lat": latitude, "long": longitude, "dist": 75,
         "parameter": "level", "status": "Active", "_limit": 500,
     })
-    return get_json(url, timeout=16).get("items", [])
+    return get_json(url, timeout=8).get("items", [])
 
 
 def matching_gauges(stations: list[dict], river: str,
@@ -458,7 +463,7 @@ def government_station_reading(rloi_id: str) -> dict:
     # to the separate EA flood-monitoring station endpoint.
     if not rloi_id.isdigit():
         raise ValueError("Invalid government gauge identifier")
-    content = get_bytes(GOV_GAUGE_CSV + rloi_id, timeout=18).decode("utf-8-sig")
+    content = get_bytes(GOV_GAUGE_CSV + rloi_id, timeout=8).decode("utf-8-sig")
     readings = []
     for row in csv.DictReader(io.StringIO(content)):
         try:
@@ -555,7 +560,7 @@ def nearby_forecast(key: str, location: str) -> list[dict]:
             payload = get_json(WEATHER_FORECAST_API + "?" + urlencode({
                 "key": key, "q": location, "days": forecast_days,
                 "aqi": "no", "alerts": "no",
-            }), timeout=12)
+            }), timeout=8)
             if "error" not in payload:
                 return payload.get("forecast", {}).get("forecastday", [])
         except Exception:
@@ -592,7 +597,7 @@ def live_tide_observations(latitude: float, longitude: float,
             candidates.extend(object_list(get_json(
                 GAUGE_API + "?" + urlencode({
                     "search": preferred_search, "_view": "full", "_limit": 50,
-                }), timeout=18).get("items")))
+                }), timeout=8).get("items")))
         except Exception:
             pass
     candidates.extend(object_list(get_json(
@@ -600,7 +605,7 @@ def live_tide_observations(latitude: float, longitude: float,
             "type": "TideGauge", "unitName": "mAOD",
             "lat": f"{latitude:.4f}", "long": f"{longitude:.4f}",
             "dist": 150, "_view": "full", "_limit": 100,
-        }), timeout=20).get("items")))
+        }), timeout=8).get("items")))
 
     unique = {}
     for station in candidates:
@@ -627,7 +632,7 @@ def live_tide_observations(latitude: float, longitude: float,
         if not measures and station_id and all(c.isalnum() or c in "_-" for c in station_id):
             try:
                 measures = object_list(get_json(
-                    f"{GAUGE_API}/{station_id}/measures", timeout=12).get("items"))
+                    f"{GAUGE_API}/{station_id}/measures", timeout=8).get("items"))
             except Exception:
                 continue
         def measure_rank(measure: dict) -> tuple[int, int, float]:
@@ -658,7 +663,7 @@ def live_tide_observations(latitude: float, longitude: float,
                     f"{EA_TIDE_API}/id/measures/{measure_id}/readings?" + urlencode({
                         "since": since.isoformat(timespec="seconds"),
                         "_sorted": "", "_limit": 250,
-                    }), timeout=18)
+                    }), timeout=8)
             except Exception:
                 continue
             observations = []
@@ -704,7 +709,7 @@ def modelled_tide_outlook(latitude: float, longitude: float,
         "timezone": "Europe/London",
         "forecast_days": max(1, min(forecast_days, 8)),
         "cell_selection": "sea",
-    }), timeout=20)
+    }), timeout=8)
     hourly = payload.get("hourly", {})
     raw_times = hourly.get("time", [])
     raw_values = hourly.get("sea_level_height_msl", [])
@@ -800,65 +805,27 @@ def render_modelled_tide_outlook(tide_name: str, latitude: float,
 
 
 def render_tide_panel(river: str, beat: str) -> None:
-    """Show observed tide data in a consistent, prominent position."""
+    """Show one fast modelled tide source without first scanning EA stations."""
     burnfoot_tides = river == "Border Esk" and beat in {"All beats", "Burnfoot"}
-    tide_heading = ("Live tidal level for Burnfoot" if burnfoot_tides
-                    else "Live tide near the river mouth")
+    tide_heading = ("Tide outlook for Burnfoot" if burnfoot_tides
+                    else "Tide outlook near the river mouth")
     st.markdown(f"#### 🌊 {tide_heading}")
     tide_name, tide_lat, tide_lon = TIDE_REFERENCES[river]
     if burnfoot_tides:
         st.caption(
-            "Observed tidal level from the closest suitable government gauge to "
-            f"{tide_name}. Burnfoot is upstream, so this is supporting information "
-            "rather than a measurement taken inside the beat."
+            f"Modelled tide near {tide_name}. Burnfoot is upstream, so this is "
+            "supporting information rather than a measurement inside the beat."
         )
     else:
         st.caption(
-            "Observed tidal level from the closest suitable government gauge to "
-            f"{tide_name}; this is not a measurement at the selected beat."
+            f"Modelled tide near {tide_name}; this is not a measurement at the selected beat."
         )
-
-    try:
-        preferred_station = "Metal Bridge" if river == "Border Esk" else ""
-        tide = live_tide_observations(tide_lat, tide_lon, preferred_station)
-    except Exception:
-        tide = {}
-
-    if not tide:
-        st.caption("No suitable recent Environment Agency tide-gauge reading was found; "
-                   "using a modelled Solway tide outlook instead.")
-        if render_modelled_tide_outlook(tide_name, tide_lat, tide_lon):
-            return
-        st.info("Both the government observation feed and the modelled tide feed are "
-                "temporarily unavailable.")
-        if st.button("Retry tide feed", key=f"retry_tide_{river}_{beat}"):
-            live_tide_observations.clear()
-            modelled_tide_outlook.clear()
-            st.rerun()
+    if render_modelled_tide_outlook(tide_name, tide_lat, tide_lon):
         return
-
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=24)
-    recent = [(timestamp, value) for timestamp, value in tide["observations"]
-              if timestamp >= cutoff]
-    recent_values = [value for _, value in recent]
-    observed_high = max(recent_values) if recent_values else tide["value"]
-    observed_low = min(recent_values) if recent_values else tide["value"]
-
-    tide_level_col, tide_trend_col, tide_high_col, tide_low_col = st.columns(4)
-    tide_level_col.metric("Latest tidal level", f"{tide['value']:.2f} {tide['unit']}")
-    tide_trend_col.metric("Tide movement", tide["trend"],
-                          f"{tide['change']:+.2f} m in about 1 hour")
-    tide_high_col.metric("Observed 24h high", f"{observed_high:.2f} {tide['unit']}")
-    tide_low_col.metric("Observed 24h low", f"{observed_low:.2f} {tide['unit']}")
-
-    distance_text = (f" · approximately {tide['distance_km']:.0f} km from the "
-                     "river-mouth reference"
-                     if math.isfinite(tide["distance_km"]) else "")
-    reading_time = tide["time"].astimezone(UK_TIME).strftime("%H:%M on %a %d %b %Y")
-    st.caption(
-        f"Gauge: {tide['station']}{distance_text} · latest reading {reading_time} "
-        "(local time). Source: Environment Agency real-time tide gauge API (Beta)."
-    )
+    st.info("The modelled tide feed is temporarily unavailable.")
+    if st.button("Retry tide feed", key=f"retry_tide_{river}_{beat}"):
+        modelled_tide_outlook.clear()
+        st.rerun()
 
 
 def render_method_guide(river: str, beat: str) -> None:
@@ -983,7 +950,7 @@ def sepa_canonbie_daily_levels(days: tuple[dt.date, ...]) -> dict:
         "period": "P8D", "metadata": "true", "returnfields": "Timestamp,Value",
         "dateformat": "yyyy-MM-dd'T'HH:mm:ssXXX", "format": "csv", "csvdiv": ",",
     }
-    content = get_bytes(SEPA_CANONBIE_API + "?" + urlencode(query), timeout=20).decode(
+    content = get_bytes(SEPA_CANONBIE_API + "?" + urlencode(query), timeout=8).decode(
         "utf-8-sig", errors="replace"
     )
     daily = parse_sepa_levels(content, days)
@@ -996,7 +963,7 @@ def sepa_canonbie_daily_levels(days: tuple[dt.date, ...]) -> dict:
 def gauge_daily_levels(station_id: str, rloi_id: str, days: tuple[dt.date, ...]) -> dict:
     if rloi_id:
         # Same official public station as the current-level tile.
-        body = get_bytes(GOV_GAUGE_CSV + rloi_id, timeout=18).decode("utf-8-sig")
+        body = get_bytes(GOV_GAUGE_CSV + rloi_id, timeout=8).decode("utf-8-sig")
         return parse_gauge_csv(body, list(days))
     if not station_id or not all(c.isalnum() or c in "_-" for c in station_id):
         return {}
@@ -1015,7 +982,7 @@ def gauge_daily_levels(station_id: str, rloi_id: str, days: tuple[dt.date, ...])
     result = get_json(base + identifier + "/readings?" + urlencode({
         "startdate": (days[0] - dt.timedelta(days=1)).isoformat(),
         "enddate": days[-1].isoformat(), "_limit": 10000,
-    }), timeout=22).get("items", [])
+    }), timeout=8).get("items", [])
     by_day = {}
     for reading in result:
         try:
@@ -1032,30 +999,39 @@ def gauge_daily_levels(station_id: str, rloi_id: str, days: tuple[dt.date, ...])
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def weather_daily_history(key: str, location: str, days: tuple[dt.date, ...]) -> tuple[dict, dict, bool]:
     result, pressures = {}, {}
-    for day in days:
-        if day == dt.datetime.now(UK_TIME).date():
-            continue  # Today's current observation is labelled separately.
-        try:
-            payload = get_json(WEATHER_HISTORY_API + "?" + urlencode({
-                "key": key, "q": location, "dt": day.isoformat(),
-            }), timeout=12)
-            forecast = payload["forecast"]["forecastday"][0]
-            summary = forecast["day"]
-            result[day] = str(summary["condition"]["text"])
-            hourly = []
-            for hour in forecast.get("hour", []):
-                try:
-                    value = float(hour["pressure_mb"])
-                    if 800 <= value <= 1100:
-                        hourly.append(value)
-                except (KeyError, TypeError, ValueError):
-                    continue
-            if len(hourly) >= 8:
-                pressures[day] = round(sum(hourly) / len(hourly), 1)
-        except Exception:
-            # A missing history subscription should never expose the API key in an error.
-            return result, pressures, False
-    return result, pressures, True
+    requested_days = [day for day in days
+                      if day != dt.datetime.now(UK_TIME).date()]
+
+    def fetch_day(day: dt.date) -> tuple[dt.date, str, float | None]:
+        payload = get_json(WEATHER_HISTORY_API + "?" + urlencode({
+            "key": key, "q": location, "dt": day.isoformat(),
+        }), timeout=8)
+        forecast = payload["forecast"]["forecastday"][0]
+        summary = forecast["day"]
+        hourly = []
+        for hour in forecast.get("hour", []):
+            try:
+                value = float(hour["pressure_mb"])
+                if 800 <= value <= 1100:
+                    hourly.append(value)
+            except (KeyError, TypeError, ValueError):
+                continue
+        pressure = round(sum(hourly) / len(hourly), 1) if len(hourly) >= 8 else None
+        return day, str(summary["condition"]["text"]), pressure
+
+    successful = 0
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(requested_days)))) as pool:
+        futures = [pool.submit(fetch_day, day) for day in requested_days]
+        for future in as_completed(futures):
+            try:
+                day, condition, pressure = future.result()
+                result[day] = condition
+                if pressure is not None:
+                    pressures[day] = pressure
+                successful += 1
+            except Exception:
+                continue
+    return result, pressures, successful == len(requested_days)
 
 
 def weather_icon(condition: str) -> str:
@@ -1258,7 +1234,7 @@ def parse_burnfoot_catches(html: str, year: int) -> dict:
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def burnfoot_catches(year: int) -> tuple[dict, str]:
     fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    html = get_bytes(FISHPAL_BURNFOOT, timeout=20).decode("utf-8", errors="replace")
+    html = get_bytes(FISHPAL_BURNFOOT, timeout=8).decode("utf-8", errors="replace")
     return parse_burnfoot_catches(html, year), fetched_at
 
 
@@ -1335,7 +1311,7 @@ def parse_burnfoot_weekdays(html: str, today: dt.date) -> dict[dt.date, dict]:
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def burnfoot_daily_catches(today: dt.date) -> tuple[dict, str]:
-    html = get_bytes(FISHPAL_BORDER_ESK_DAILY, timeout=20).decode("utf-8", errors="replace")
+    html = get_bytes(FISHPAL_BORDER_ESK_DAILY, timeout=8).decode("utf-8", errors="replace")
     fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return parse_burnfoot_weekdays(html, today), fetched_at
 
@@ -1436,9 +1412,122 @@ def parse_fishpal_river_week(html: str, today: dt.date) -> dict:
 
 @st.cache_data(ttl=60 * 60, show_spinner=False)
 def tweed_daily_catches(today: dt.date) -> tuple[dict, str]:
-    html = get_bytes(FISHPAL_TWEED_DAILY, timeout=20).decode("utf-8", errors="replace")
+    html = get_bytes(FISHPAL_TWEED_DAILY, timeout=8).decode("utf-8", errors="replace")
     fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return parse_fishpal_river_week(html, today), fetched_at
+
+
+# A dated baseline prevents an empty panel on the first cold start if FishPal
+# blocks a server request. Every fallback is visibly labelled with its age.
+BUILTIN_FISHPAL_SNAPSHOTS = {
+    "burnfoot_season_2026": {
+        "saved_at": "2026-09-13 13:27 UTC",
+        "data": {
+            "salmon": {str(month): value for month, value in enumerate(
+                       [0, 1, 0, 0, 3, 20, 17, 22, 73, 43, 0, 0, 0]) if month},
+            "sea_trout": {str(month): value for month, value in enumerate(
+                          [0, 1, 0, 0, 0, 1, 6, 3, 8, 13, 0, 0, 0]) if month},
+            "last_seven": {"salmon": 26, "sea_trout": 8},
+        },
+    },
+    "tweed_daily": {
+        "saved_at": "2026-09-16 07:30 UTC",
+        "data": {
+            "daily_totals": {
+                "2026-09-14": {"salmon": 33, "sea_trout": 0},
+                "2026-09-15": {"salmon": 16, "sea_trout": 2},
+            },
+            "daily_beats": {
+                "2026-09-14": {
+                    "Tweedhill": {"salmon": 7, "sea_trout": 0},
+                    "Horncliffe": {"salmon": 19, "sea_trout": 0},
+                    "Ladykirk": {"salmon": 1, "sea_trout": 0},
+                    "Milne Graden": {"salmon": 2, "sea_trout": 0},
+                    "West Learmouth": {"salmon": 1, "sea_trout": 0},
+                    "Lower Birgham": {"salmon": 1, "sea_trout": 0},
+                    "Upper Makerstoun": {"salmon": 1, "sea_trout": 0},
+                    "Boleside": {"salmon": 1, "sea_trout": 0},
+                },
+                "2026-09-15": {
+                    "Tweedhill": {"salmon": 1, "sea_trout": 0},
+                    "Horncliffe": {"salmon": 1, "sea_trout": 0},
+                    "Pedwell": {"salmon": 4, "sea_trout": 0},
+                    "Ladykirk": {"salmon": 7, "sea_trout": 0},
+                    "Lower Birgham": {"salmon": 1, "sea_trout": 0},
+                    "Birgham Dub": {"salmon": 2, "sea_trout": 0},
+                    "Boleside": {"salmon": 0, "sea_trout": 2},
+                },
+            },
+            "beat_names": [
+                "Tweedhill", "Horncliffe", "Pedwell", "Ladykirk", "Milne Graden",
+                "West Learmouth", "Lower Birgham", "Birgham Dub", "Upper Makerstoun",
+                "Boleside",
+            ],
+        },
+    },
+}
+
+
+def _json_ready(value):
+    if isinstance(value, dict):
+        return {key.isoformat() if isinstance(key, dt.date) else str(key): _json_ready(item)
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
+
+
+def _restore_fishpal_snapshot(cache_key: str, value: dict) -> dict:
+    data = dict(value)
+    if cache_key.startswith("burnfoot_season_"):
+        for species in ("salmon", "sea_trout"):
+            data[species] = {int(month): int(count_value)
+                             for month, count_value in data.get(species, {}).items()}
+    elif cache_key == "burnfoot_daily":
+        data = {dt.date.fromisoformat(day): counts for day, counts in data.items()}
+    elif cache_key == "tweed_daily":
+        data["daily_totals"] = {
+            dt.date.fromisoformat(day): counts
+            for day, counts in data.get("daily_totals", {}).items()
+        }
+        data["daily_beats"] = {
+            dt.date.fromisoformat(day): beats
+            for day, beats in data.get("daily_beats", {}).items()
+        }
+    return data
+
+
+def _read_fishpal_snapshots() -> dict:
+    try:
+        payload = json.loads(FISHPAL_SNAPSHOT_FILE.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_fishpal_snapshot(cache_key: str, data: dict, retrieved_at: str) -> None:
+    try:
+        snapshots = _read_fishpal_snapshots()
+        snapshots[cache_key] = {"saved_at": retrieved_at, "data": _json_ready(data)}
+        temporary = FISHPAL_SNAPSHOT_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps(snapshots, indent=2), encoding="utf-8")
+        os.replace(temporary, FISHPAL_SNAPSHOT_FILE)
+    except OSError:
+        pass  # Some hosts use a read-only app directory; memory caching still works.
+
+
+def fishpal_with_fallback(cache_key: str, fetcher) -> tuple[dict, str, bool]:
+    try:
+        data, retrieved_at = fetcher()
+        _save_fishpal_snapshot(cache_key, data, retrieved_at)
+        return data, retrieved_at, False
+    except Exception:
+        snapshots = _read_fishpal_snapshots()
+        snapshot = snapshots.get(cache_key) or BUILTIN_FISHPAL_SNAPSHOTS.get(cache_key)
+        if not snapshot:
+            raise
+        data = _restore_fishpal_snapshot(cache_key, snapshot["data"])
+        return data, str(snapshot.get("saved_at") or "time unknown"), True
 
 
 def clean_reports(upload, selected_year: int) -> tuple[pd.DataFrame, list[str]]:
@@ -1553,13 +1642,7 @@ reports, report_problems = clean_reports(upload, CURRENT_YEAR)
 tweed_feed = {}
 tweed_feed_retrieved = ""
 tweed_feed_error = ""
-if river == "Tweed":
-    try:
-        tweed_feed, tweed_feed_retrieved = tweed_daily_catches(
-            dt.datetime.now(UK_TIME).date()
-        )
-    except Exception as exc:
-        tweed_feed_error = str(exc)
+tweed_feed_fallback = False
 with beat_slot:
     uploaded_beats = (set(reports.loc[reports["river"] == river, "beat"]) - {""}
                       if len(reports) else set())
@@ -1578,12 +1661,8 @@ with beat_slot:
             st.caption("[Browse FishPal's Border Esk listings](https://www.fishpal.com/search/in/Border%20Esk) "
                        "for reference; they are not imported into this app.")
     elif river == "Tweed":
-        if tweed_feed_error:
-            st.caption("FishPal's Tweed beat list is temporarily unavailable: "
-                       + tweed_feed_error)
-        else:
-            st.caption("Named beats are taken from FishPal's current-week Tweed "
-                       "catch table and may change as reports are added.")
+        st.caption("The Tweed beat list is stored in the app. Current-week FishPal "
+                   "catches load below after the live river conditions.")
 
 burnfoot_photo = Path(__file__).with_name("burnfoot_header.jpg")
 illustrative_banner = Path(__file__).with_name("salmon_river_banner.png")
@@ -1860,6 +1939,7 @@ if view == "Last 7 days":
     recent_counts = {}
     fishpal_daily = {}
     fishpal_retrieved = ""
+    fishpal_fallback = False
     if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
         season_status = BURNFOOT_VERIFIED_SEASON.get(CURRENT_YEAR)
         season_card, recent_card = st.columns(2)
@@ -1871,13 +1951,21 @@ if view == "Last 7 days":
         else:
             season_card.metric("Burnfoot salmon · season to date", "Not verified")
         try:
-            fishpal_week, _ = burnfoot_catches(CURRENT_YEAR)
+            fishpal_week, fishpal_season_retrieved, fishpal_season_fallback = (
+                fishpal_with_fallback(
+                    f"burnfoot_season_{CURRENT_YEAR}",
+                    lambda: burnfoot_catches(CURRENT_YEAR),
+                )
+            )
             recent_counts = fishpal_week.get("last_seven", {})
             if "salmon" in recent_counts:
                 recent_card.metric("Burnfoot salmon · last 7 days (FishPal)",
                                    recent_counts["salmon"])
             else:
                 recent_card.metric("Burnfoot salmon · last 7 days", "Unavailable")
+            if fishpal_season_fallback:
+                st.caption("FishPal's live page could not be read; the seven-day card "
+                           f"uses the saved snapshot from {fishpal_season_retrieved}.")
         except Exception:
             recent_card.metric("Burnfoot salmon · last 7 days", "Unavailable")
             st.warning("Burnfoot's seven-day FishPal total is temporarily unavailable.")
@@ -1889,11 +1977,19 @@ if view == "Last 7 days":
                 "includes grilse; the separate FishPal card covers only the last seven days."
             )
         try:
-            fishpal_daily, fishpal_retrieved = burnfoot_daily_catches(today)
+            fishpal_daily, fishpal_retrieved, fishpal_fallback = fishpal_with_fallback(
+                "burnfoot_daily", lambda: burnfoot_daily_catches(today)
+            )
         except Exception:
             st.warning("FishPal's weekday catches are temporarily unavailable; "
                        "only dated CSV reports can appear as daily bars.")
     elif river == "Tweed":
+        try:
+            tweed_feed, tweed_feed_retrieved, tweed_feed_fallback = fishpal_with_fallback(
+                "tweed_daily", lambda: tweed_daily_catches(today)
+            )
+        except Exception as exc:
+            tweed_feed_error = str(exc)
         fishpal_retrieved = tweed_feed_retrieved
         if tweed_feed:
             if beat == "All beats":
@@ -1915,6 +2011,9 @@ if view == "Last 7 days":
                                tweed_salmon)
             trout_card.metric(f"{scope_name} sea trout · week so far (FishPal)",
                               tweed_trout)
+            if tweed_feed_fallback:
+                st.caption("FishPal's live page could not be read; displaying the "
+                           f"saved snapshot from {tweed_feed_retrieved}.")
         else:
             st.warning("FishPal's Tweed current-week catches are temporarily unavailable; "
                        "only dated CSV reports can appear as daily bars."
@@ -2039,6 +2138,8 @@ if view == "Last 7 days":
                    f"page retrieved {fishpal_retrieved}. The weekday table covers the current week only; "
                    "days from last week are unknown without a saved dated catch log. "
                    "These bars are Burnfoot-only, even when 'All beats' is selected, and are not added to CSV counts.")
+        if fishpal_fallback:
+            st.caption("This is a saved FishPal snapshot because the live request failed.")
     elif use_fishpal_daily and river == "Tweed":
         scope_text = ("the whole River Tweed" if beat == "All beats" else beat)
         st.caption(f"[Daily Tweed catches on FishPal]({FISHPAL_TWEED_DAILY}) · "
@@ -2119,7 +2220,10 @@ if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
     st.caption("Burnfoot only, not the whole Border Esk. Figures are as posted on FishPal; "
                "they are separate from EA annual totals and uploaded catch reports.")
     try:
-        fishpal, retrieved_at = burnfoot_catches(CURRENT_YEAR)
+        fishpal, retrieved_at, used_fallback = fishpal_with_fallback(
+            f"burnfoot_season_{CURRENT_YEAR}",
+            lambda: burnfoot_catches(CURRENT_YEAR),
+        )
         current_month = dt.datetime.now(dt.timezone.utc).month
         month_rows = [
             {"Month": dt.date(CURRENT_YEAR, month, 1).strftime("%b"),
@@ -2150,18 +2254,33 @@ if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
                          f"{season_status['reported_date']:%d %b %Y}."
                          if season_status else "")
         st.caption(f"[Monthly breakdown: Burnfoot on FishPal]({FISHPAL_BURNFOOT}#CatchesSection) · "
-                   f"page retrieved {retrieved_at}; refreshes at most hourly. "
+                   f"{'saved snapshot' if used_fallback else 'page retrieved'} "
+                   f"{retrieved_at}; refreshes at most hourly. "
                    "The page gives monthly counts, not catch dates/times, methods, "
                    "or historical weather/pressure. Grilse are included in salmon."
                    + verified_note)
+        if used_fallback:
+            st.warning("FishPal's live page could not be read by the app. The verified "
+                       "192 season total remains current to its stated date; the monthly "
+                       "chart is the saved, timestamped FishPal snapshot above.")
     except Exception as exc:
-        st.warning("Burnfoot FishPal catch data are unavailable right now; no figures "
-                   "have been inferred from a previous snapshot. " + str(exc))
+        season_status = BURNFOOT_VERIFIED_SEASON.get(CURRENT_YEAR)
+        if season_status:
+            st.metric("Salmon incl. grilse · season to date",
+                      season_status["salmon_including_grilse"])
+        st.warning("Burnfoot's monthly FishPal table is temporarily unavailable. " + str(exc))
     st.divider()
 elif river == "Tweed":
     st.subheader(f"River Tweed · current-week FishPal catches (private test)")
     st.caption("Current-week FishPal reports only. These figures are separate from "
                "official archive totals and uploaded permissioned reports.")
+    try:
+        tweed_feed, tweed_feed_retrieved, tweed_feed_fallback = fishpal_with_fallback(
+            "tweed_daily",
+            lambda: tweed_daily_catches(dt.datetime.now(UK_TIME).date()),
+        )
+    except Exception as exc:
+        tweed_feed_error = str(exc)
     if tweed_feed:
         if beat == "All beats":
             selected_tweed_daily = tweed_feed.get("daily_totals", {})
@@ -2189,11 +2308,14 @@ elif river == "Tweed":
             st.bar_chart(tweed_frame.set_index("Date")[["Salmon", "Sea trout"]])
             st.dataframe(tweed_frame, hide_index=True, use_container_width=True)
         st.caption(f"[Daily Tweed catches on FishPal]({FISHPAL_TWEED_DAILY}) · "
-                   f"page retrieved {tweed_feed_retrieved}; refreshes at most hourly. "
+                   f"{'saved snapshot' if tweed_feed_fallback else 'page retrieved'} "
+                   f"{tweed_feed_retrieved}; refreshes at most hourly. "
                    "A missing previous-week day remains unknown rather than zero.")
+        if tweed_feed_fallback:
+            st.warning("FishPal's live page could not be read; displaying the saved, "
+                       "timestamped current-week snapshot.")
     else:
-        st.warning("Tweed FishPal catch data are unavailable right now; no figures "
-                   "have been inferred from a previous snapshot. " + tweed_feed_error)
+        st.warning("Tweed FishPal catch data are unavailable right now. " + tweed_feed_error)
     st.divider()
 st.subheader(f"Permissioned reports · 1 January–today {CURRENT_YEAR}")
 if len(reports):
