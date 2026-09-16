@@ -783,22 +783,6 @@ def render_modelled_tide_outlook(tide_name: str, latitude: float,
                            "Low tides": " · ".join(lows) or "—"})
     st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
 
-    chart_end = now + dt.timedelta(hours=72)
-    chart_rows = [{"Time": timestamp, "Sea level (m MSL)": value}
-                  for timestamp, value in outlook["series"]
-                  if now - dt.timedelta(hours=2) <= timestamp <= chart_end]
-    if len(chart_rows) > 1:
-        chart = alt.Chart(pd.DataFrame(chart_rows)).mark_line(
-            color="#126b89", strokeWidth=2.5
-        ).encode(
-            x=alt.X("Time:T", title="Local time"),
-            y=alt.Y("Sea level (m MSL):Q", title="Modelled sea level (m MSL)",
-                    scale=alt.Scale(zero=False)),
-            tooltip=[alt.Tooltip("Time:T", title="Time", format="%d %b %H:%M"),
-                     alt.Tooltip("Sea level (m MSL):Q", title="Level", format=".2f")],
-        ).properties(height=220)
-        st.altair_chart(chart, use_container_width=True)
-
     st.caption(
         f"Modelled tide near {tide_name}, not at Burnfoot. Source: Open-Meteo Marine "
         "API / Météo-France SMOC tides, approximately 8 km model resolution. Heights "
@@ -860,23 +844,6 @@ def render_tide_panel(river: str, beat: str) -> None:
                           f"{tide['change']:+.2f} m in about 1 hour")
     tide_high_col.metric("Observed 24h high", f"{observed_high:.2f} {tide['unit']}")
     tide_low_col.metric("Observed 24h low", f"{observed_low:.2f} {tide['unit']}")
-
-    chart_rows = [{"Time": timestamp.astimezone(UK_TIME), "Tidal level": value}
-                  for timestamp, value in recent]
-    if len(chart_rows) > 1:
-        tide_frame = pd.DataFrame(chart_rows)
-        tide_chart = alt.Chart(tide_frame).mark_line(
-            color="#126b89", strokeWidth=2.5
-        ).encode(
-            x=alt.X("Time:T", title="Local time"),
-            y=alt.Y("Tidal level:Q", title=f"Level ({tide['unit']})",
-                    scale=alt.Scale(zero=False)),
-            tooltip=[
-                alt.Tooltip("Time:T", title="Time", format="%d %b %H:%M"),
-                alt.Tooltip("Tidal level:Q", title=f"Level ({tide['unit']})", format=".2f"),
-            ],
-        ).properties(height=220)
-        st.altair_chart(tide_chart, use_container_width=True)
 
     distance_text = (f" · approximately {tide['distance_km']:.0f} km from the "
                      "river-mouth reference"
@@ -1669,6 +1636,11 @@ else:
     weather_col.caption("Weather request failed: " + weather_error if weather_error else
                         "Set WEATHER_API_KEY in your deployment secrets.")
 
+# Reserve a prominent position beneath the live readings. The seven-day data
+# needed for the rating is assembled later, then rendered back into this slot.
+# This keeps the traffic light visible even when tide and forecast panels grow.
+traffic_light_slot = st.empty() if view == "Last 7 days" else None
+
 render_tide_panel(river, beat)
 render_method_guide(river, beat)
 
@@ -1826,36 +1798,37 @@ if view == "Last 7 days":
                      "Weather icon": weather_icon(day_weather or "Not available")})
     seven = pd.DataFrame(rows)
     light_scope = "Burnfoot only" if beat == "All beats" and use_fishpal_daily else beat
-    st.markdown("#### Today's indicative conditions")
-    st.caption(f"Comparison scope: {light_scope}. This is not a catch forecast or a safety rating.")
-    if beat == "All beats" and not use_fishpal_daily:
-        st.info("⚪ Select a beat to compare today's conditions with its recent catch days. "
-                "An all-beats selection may contain incomplete beat coverage.")
-    else:
-        current_condition = (weather or {}).get("current", {})
-        updated_epoch = finite_number(current_condition.get("last_updated_epoch"))
-        weather_fresh = (updated_epoch is not None and
-                         0 <= dt.datetime.now(dt.timezone.utc).timestamp() - updated_epoch <= 6 * 3600)
-        label, explanation = catch_condition_light(
-            rows, today, current_level_m,
-            current_condition.get("condition", {}).get("text", "") if weather_fresh else "",
-            current_condition.get("pressure_mb") if weather_fresh else None,
-        )
-        if label:
-            lights = {"Excellent": "🟢", "Moderate": "🟠", "Poor": "🔴"}
-            st.markdown(f"### {lights[label]} {label} match")
+    with traffic_light_slot.container():
+        st.markdown("#### Today's indicative conditions")
+        st.caption(f"Comparison scope: {light_scope}. This is not a catch forecast or a safety rating.")
+        if beat == "All beats" and not use_fishpal_daily:
+            st.info("⚪ Select a beat to compare today's conditions with its recent catch days. "
+                    "An all-beats selection may contain incomplete beat coverage.")
         else:
-            st.info("⚪ Not enough data for a traffic-light rating")
-        st.caption(explanation)
-    with st.expander("How the traffic light is calculated"):
-        st.write("An experimental 0–8 point comparison for the selected beat: up to two points "
-                 "each for recent dated catches, today's gauge level compared with "
-                 "successful days, the broad weather category and air pressure compared "
-                 "with successful days. Green is 7–8, amber is 4–6, red is 0–3. "
-                 "At least four complete prior days, including two days with fish, are required. "
-                 "Past weather and pressure are daily observations near the river, not "
-                 "measurements at the exact time or place a fish was caught. "
-                 "The rule has not been scientifically validated and must not be used for safety decisions.")
+            current_condition = (weather or {}).get("current", {})
+            updated_epoch = finite_number(current_condition.get("last_updated_epoch"))
+            weather_fresh = (updated_epoch is not None and
+                             0 <= dt.datetime.now(dt.timezone.utc).timestamp() - updated_epoch <= 6 * 3600)
+            label, explanation = catch_condition_light(
+                rows, today, current_level_m,
+                current_condition.get("condition", {}).get("text", "") if weather_fresh else "",
+                current_condition.get("pressure_mb") if weather_fresh else None,
+            )
+            if label:
+                lights = {"Excellent": "🟢", "Moderate": "🟠", "Poor": "🔴"}
+                st.markdown(f"### {lights[label]} {label} match")
+            else:
+                st.info("⚪ Not enough data for a traffic-light rating")
+            st.caption(explanation)
+        with st.expander("How the traffic light is calculated"):
+            st.write("An experimental 0–8 point comparison for the selected beat: up to two points "
+                     "each for recent dated catches, today's gauge level compared with "
+                     "successful days, the broad weather category and air pressure compared "
+                     "with successful days. Green is 7–8, amber is 4–6, red is 0–3. "
+                     "At least four complete prior days, including two days with fish, are required. "
+                     "Past weather and pressure are daily observations near the river, not "
+                     "measurements at the exact time or place a fish was caught. "
+                     "The rule has not been scientifically validated and must not be used for safety decisions.")
     plots = []
     # A categorical day axis gives exactly seven positions; a temporal axis
     # inserted several ticks per day and repeated the same formatted date.
