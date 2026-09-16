@@ -345,20 +345,39 @@ BURNFOOT_METHOD_GUIDE = {
     },
     "Worm (date-restricted)": {
         "Worm fishing": {
-            "conditions": "A Burnfoot method only during the beat's permitted worm-fishing dates.",
+            "conditions": "Permitted at Burnfoot from 1 April to 30 September, subject to the beat's current rules and conditions.",
             "presentation": "Ask the fishery which pools, tackle and hook arrangement are permitted before starting.",
-            "evidence": "Burnfoot method confirmed to the app owner, but exact permitted dates have not yet been verified for the app.",
-            "date_restricted": True,
+            "evidence": "Method and permitted dates supplied to the app owner for Burnfoot.",
+            "permitted_month_day": ((4, 1), (9, 30)),
         },
     },
-    "Prawn (date-restricted)": {
-        "Prawn fishing": {
-            "conditions": "A Burnfoot method only during the beat's permitted prawn-fishing dates.",
+    "Shrimp / prawn (date-restricted)": {
+        "Shrimp / prawn fishing": {
+            "conditions": "Permitted at Burnfoot from 1 April to 30 September, subject to the beat's current rules and conditions.",
             "presentation": "Confirm the permitted tackle, hook arrangement and areas with the fishery before fishing.",
-            "evidence": "Burnfoot method confirmed to the app owner, but exact permitted dates have not yet been verified for the app.",
-            "date_restricted": True,
+            "evidence": "Method and permitted dates supplied to the app owner for Burnfoot.",
+            "permitted_month_day": ((4, 1), (9, 30)),
         },
     },
+}
+
+BURNFOOT_TIME_GUIDE = {
+    "Dawn": (
+        "Low light can make a quiet approach important. Be set up before entering "
+        "the water and begin with likely holding water rather than repeated casting."
+    ),
+    "Morning": (
+        "Cover the pools methodically while conditions are still relatively cool. "
+        "Change depth or presentation before repeatedly changing tackle."
+    ),
+    "Afternoon": (
+        "In brighter conditions, concentrate on shaded, broken or deeper water and "
+        "reduce tackle size where the river is low and clear."
+    ),
+    "Evening": (
+        "Falling light may suit a stronger silhouette. Allow enough daylight to leave "
+        "the beat safely and follow any fishing-time limits set by Burnfoot."
+    ),
 }
 
 
@@ -861,15 +880,20 @@ def render_tide_panel(river: str, beat: str) -> None:
 
 
 def render_method_guide(river: str, beat: str) -> None:
-    """Show a compact tackle selector where some local guidance is available."""
+    """Show separate session-planning guidance where local detail is available."""
     if river != "Border Esk" or beat not in {"All beats", "Burnfoot"}:
         return
 
-    with st.expander("🎣 Burnfoot fishing method guide", expanded=False):
+    with st.expander("🎣 Burnfoot session advice: time & method", expanded=False):
         st.caption(
-            "Choose a method and pattern for a practical starting point. This is "
-            "tackle guidance, not a prediction that fish will be caught."
+            "These choices change the advice below, not the traffic light. The light "
+            "rates river and weather conditions only."
         )
+        planned_time = st.selectbox(
+            "Planned fishing time", list(BURNFOOT_TIME_GUIDE),
+            index=1, key=f"session_time_{river}_{beat}",
+        )
+        st.info(BURNFOOT_TIME_GUIDE[planned_time])
         method_col, choice_col = st.columns(2)
         method = method_col.selectbox(
             "Method",
@@ -915,11 +939,20 @@ def render_method_guide(river: str, beat: str) -> None:
         presentation_col.markdown("**How to approach it**")
         presentation_col.write(guide["presentation"])
         st.caption(f"Evidence note: {guide['evidence']}")
-        if guide.get("date_restricted"):
-            st.error(
-                "Date-restricted method: do not use this method until Burnfoot "
-                "has confirmed that it is permitted on the selected fishing date."
-            )
+        if guide.get("permitted_month_day"):
+            today = dt.datetime.now(UK_TIME).date()
+            start_md, end_md = guide["permitted_month_day"]
+            permitted_today = start_md <= (today.month, today.day) <= end_md
+            if permitted_today:
+                st.success(
+                    f"Permitted-date check: this method is within Burnfoot's "
+                    f"1 April–30 September period today ({today:%d %B %Y})."
+                )
+            else:
+                st.error(
+                    f"Outside permitted dates: this method is limited to "
+                    f"1 April–30 September at Burnfoot (today is {today:%d %B %Y})."
+                )
         st.markdown(
             "[FishPal Border Esk tackle and flies]"
             "(https://www.fishpal.com/scotland/borderesk/tackleandflies.html)"
@@ -1193,22 +1226,10 @@ def _closeness(value: float, centre: float, full_band: float, zero_band: float) 
     return 1 - (gap - full_band) / (zero_band - full_band)
 
 
-def _time_group(value: object) -> str | None:
-    text = str(value or "").strip().lower()
-    if text in {"dawn", "morning", "afternoon", "evening"}:
-        return text
-    match = re.search(r"(?:^|\s)([01]?\d|2[0-3])(?::[0-5]\d)?", text)
-    if not match:
-        return None
-    hour = int(match.group(1))
-    return "dawn" if hour < 8 else "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
-
-
 def scientific_condition_light(rows: list[dict], today: dt.date,
                                current_level: object, current_weather: dict,
                                levels: dict, weather_details: dict,
                                season_monthly: dict[int, int] | None,
-                               planned_time: str, planned_method: str,
                                temperature_estimate: dict | None = None) -> dict:
     """Experimental salmon-condition index with explicit evidence and confidence."""
     level = finite_number(current_level)
@@ -1232,10 +1253,10 @@ def scientific_condition_light(rows: list[dict], today: dt.date,
         ordered = sorted(catches)[-5:]
         weighted = sum(fish * (index + 1) for index, (_, fish) in enumerate(ordered))
         daily_rate = weighted / sum(range(1, len(ordered) + 1))
-        add("Recent salmon catches", 25, min(1.0, daily_rate / 3.0),
+        add("Recent salmon catches", 27, min(1.0, daily_rate / 3.0),
             f"Recency-weighted {daily_rate:.1f} salmon/day from {len(ordered)} reported days")
     else:
-        add("Recent salmon catches", 25, None,
+        add("Recent salmon catches", 27, None,
             f"Only {len(catches)} dated salmon report(s)")
 
     usable_months = {month: count for month, count in (season_monthly or {}).items()
@@ -1244,21 +1265,21 @@ def scientific_condition_light(rows: list[dict], today: dt.date,
         month_count = usable_months.get(today.month)
         season_score = (month_count / max(usable_months.values())
                         if month_count is not None else None)
-        add("Season", 15, season_score,
+        add("Season", 16, season_score,
             (f"Month has {month_count} archived salmon; peak month has "
              f"{max(usable_months.values())}" if month_count is not None
              else "No archive value for this month"))
     else:
-        add("Season", 15, None, "No monthly salmon archive loaded for this selection")
+        add("Season", 16, None, "No monthly salmon archive loaded for this selection")
 
     good_levels = [finite_number(row.get("Water level (m)")) for row in positive]
     good_levels = [value for value in good_levels if value is not None]
     if level is not None and len(good_levels) >= 2:
         centre = median(good_levels)
-        add("River level", 15, _closeness(level, centre, 0.08, 0.35),
+        add("River level", 16, _closeness(level, centre, 0.08, 0.35),
             f"{level:.2f} m now; successful-day median {centre:.2f} m")
     else:
-        add("River level", 15, None,
+        add("River level", 16, None,
             "Needs a fresh gauge and at least two successful days with levels")
 
     dated_levels = sorted((day, finite_number(value)) for day, value in levels.items()
@@ -1319,28 +1340,10 @@ def scientific_condition_light(rows: list[dict], today: dt.date,
     if group is not None and wind is not None:
         weather_score = 0.85 if group in {"wet", "cloudy", "misty"} else 0.55
         wind_score = 1.0 if wind <= 15 else 0.65 if wind <= 25 else 0.25
-        add("Weather and wind", 7, (weather_score + wind_score) / 2,
+        add("Weather and wind", 8, (weather_score + wind_score) / 2,
             f"{group}; wind {wind:.1f} mph")
     else:
-        add("Weather and wind", 7, None, "Current weather or wind unavailable")
-
-    matching_times = [_time_group(row.get("Time")) for row in positive]
-    matching_times = [value for value in matching_times if value]
-    if matching_times:
-        common = Counter(matching_times).most_common(1)[0][0]
-        add("Planned time", 3, 1.0 if planned_time.lower() == common else 0.55,
-            f"Most reported successful catches: {common}")
-    else:
-        add("Planned time", 3, None, "Catch times have not been supplied")
-
-    matching_methods = [str(row.get("Method") or "").strip().lower() for row in positive]
-    matching_methods = [value for value in matching_methods if value]
-    if matching_methods:
-        common = Counter(matching_methods).most_common(1)[0][0]
-        add("Planned method", 2, 1.0 if planned_method.lower() in common else 0.55,
-            f"Most reported successful method: {common}")
-    else:
-        add("Planned method", 2, None, "Methods have not been supplied with dated catches")
+        add("Weather and wind", 8, None, "Current weather or wind unavailable")
 
     available_weight = sum(item["Weight"] for item in factors if item["Score"] is not None)
     weighted_points = sum(item["Weight"] * item["Score"] for item in factors
@@ -2521,26 +2524,16 @@ if view == "Last 7 days":
                 today, current_condition if weather_fresh else {},
                 weather_details, levels, current_level_m,
             )
-            temp_col, plan_a, plan_b = st.columns(3)
             if temperature_estimate:
-                temp_col.metric("Estimated river temperature",
-                                f"{temperature_estimate['value']:.1f} °C")
-                temp_col.caption(
+                st.metric("Estimated river temperature",
+                          f"{temperature_estimate['value']:.1f} °C")
+                st.caption(
                     f"Likely {temperature_estimate['low']:.1f}–"
                     f"{temperature_estimate['high']:.1f} °C · "
                     f"{temperature_estimate['confidence']} confidence · not measured")
             else:
-                temp_col.metric("Estimated river temperature", "Unavailable")
-                temp_col.caption("Recent air-temperature observations are required.")
-            planned_time = plan_a.selectbox(
-                "Planned fishing time", ["Dawn", "Morning", "Afternoon", "Evening"],
-                index=1, key=f"condition_time_{river}_{beat}")
-            method_options = (["Fly", "Spinner", "Worm", "Prawn"]
-                              if river == "Border Esk" and beat in {"All beats", "Burnfoot"}
-                              else ["Fly", "Spinner", "Other"])
-            planned_method = plan_b.selectbox(
-                "Planned method", method_options,
-                key=f"condition_method_{river}_{beat}")
+                st.metric("Estimated river temperature", "Unavailable")
+                st.caption("Recent air-temperature observations are required.")
             if river == "Border Esk" and beat in {"All beats", "Burnfoot"}:
                 snapshot = BUILTIN_FISHPAL_SNAPSHOTS["burnfoot_season_2026"]["data"]
                 season_monthly = {int(month): int(value)
@@ -2553,7 +2546,7 @@ if view == "Last 7 days":
                 rows, today, current_level_m,
                 current_condition if weather_fresh else {},
                 levels, weather_details, season_monthly,
-                planned_time, planned_method, temperature_estimate,
+                temperature_estimate,
             )
             label = result["label"]
             if label:
@@ -2577,10 +2570,10 @@ if view == "Last 7 days":
                     })
                 st.dataframe(pd.DataFrame(factor_rows), hide_index=True,
                              use_container_width=True)
-            st.write("The score combines daily salmon catches (25%), season (15%), river "
-                     "level (15%), level trend (10%), recent rainfall (10%), temperature "
-                     "proxy (8%), weather and wind (7%), pressure (5%), planned time (3%) "
-                     "and method (2%). Green is 72–100, amber is 45–71 and red is below 45. "
+            st.write("The conditions-only score combines daily salmon catches (27%), "
+                     "season (16%), river level (16%), level trend (10%), recent rainfall "
+                     "(10%), estimated water temperature (8%), weather and wind (8%) and "
+                     "pressure (5%). Green is 72–100, amber is 45–71 and red is below 45. "
                      "Unavailable factors reduce confidence and are not scored as zero. A grey "
                      "light is shown when coverage or dated catches are insufficient.")
             st.warning("This is a transparent experimental index, not a scientifically validated "
